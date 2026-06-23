@@ -1,5 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import Layout from './components/Layout/Layout';
+import React, { useState, useEffect, useCallback } from 'react';import Layout from './components/Layout/Layout';
 import Topbar from './components/Topbar/Topbar';
 import DrawingToolbar from './components/Toolbar/DrawingToolbar';
 import Watchlist from './components/Watchlist/Watchlist';
@@ -15,6 +14,13 @@ import ChartGrid from './components/Chart/ChartGrid';
 import AlertDialog from './components/Alert/AlertDialog';
 import RightToolbar from './components/Toolbar/RightToolbar';
 import AlertsPanel from './components/Alerts/AlertsPanel';
+import { AppLayout } from './components/Layout/AppLayout';
+
+import { useMarketStore } from './stores/marketStore';
+import { useTradingStore } from './stores/tradingStore';
+import { useTradeMarkers } from './hooks/useTradeMarkers';
+
+
 
 const VALID_INTERVAL_UNITS = new Set(['s', 'm', 'h', 'd', 'w', 'M']);
 const DEFAULT_FAVORITE_INTERVALS = []; // No default favorites
@@ -1018,10 +1024,61 @@ function App() {
     }
   };
 
+// Poll current price from active chart and update trading store
+useEffect(() => {
+  const interval = setInterval(() => {
+    const activeRef = chartRefs.current[activeChartId];
+    if (activeRef && typeof activeRef.getCurrentPrice === 'function') {
+      const price = activeRef.getCurrentPrice();
+      const time = activeRef.getCurrentTime?.() || Math.floor(Date.now() / 1000);
+      if (price !== null && price !== undefined && !isNaN(price)) {
+        useMarketStore.getState().setCurrentPrice(price);
+        useTradingStore.getState().updatePnLAndCheckSLTP(price, time);
+      }
+    }
+  }, 100);
+  return () => clearInterval(interval);
+}, [activeChartId, chartRefs]);
+
+useTradeMarkers(chartRefs, activeChartId);
+
+const getCurrentTime = useCallback(() => {
+  const ref = chartRefs.current[activeChartId];
+  if (ref && typeof ref.getCurrentTime === 'function') {
+    return ref.getCurrentTime();
+  }
+  return Math.floor(Date.now() / 1000); // fallback
+}, [activeChartId, chartRefs]);
+
+
   return (
     <>
-      <Layout
-        isLeftToolbarVisible={showDrawingToolbar}
+      <AppLayout
+        chart={
+          <ChartGrid
+            currentTime={getCurrentTime()}
+            charts={charts}
+            layout={layout}
+            activeChartId={activeChartId}
+            onActiveChartChange={setActiveChartId}
+            chartRefs={chartRefs}
+            onAlertsSync={handleChartAlertsSync}
+            onAlertTriggered={handleChartAlertTriggered}
+            onReplayModeChange={handleReplayModeChange}
+            chartType={chartType}
+            activeTool={activeTool}
+            onToolUsed={handleToolUsed}
+            isLogScale={isLogScale}
+            isAutoScale={isAutoScale}
+            magnetMode={isMagnetMode}
+            timeRange={currentTimeRange}
+            isToolbarVisible={showDrawingToolbar}
+            theme={theme}
+            isDrawingsLocked={isDrawingsLocked}
+            isDrawingsHidden={isDrawingsHidden}
+            isTimerVisible={isTimerVisible}
+          />
+        }
         topbar={
           <Topbar
             symbol={currentSymbol}
@@ -1065,86 +1122,9 @@ function App() {
             isTimerVisible={isTimerVisible}
           />
         }
-        bottomBar={
-          <BottomBar
-            currentTimeRange={currentTimeRange}
-            onTimeRangeChange={(range, interval) => {
-              setCurrentTimeRange(range);
-              if (interval) {
-                handleIntervalChange(interval);
-              }
-            }}
-            isLogScale={isLogScale}
-            isAutoScale={isAutoScale}
-            onToggleLogScale={() => setIsLogScale(!isLogScale)}
-            onToggleAutoScale={() => setIsAutoScale(!isAutoScale)}
-            onResetZoom={() => {
-              const activeRef = chartRefs.current[activeChartId];
-              if (activeRef) {
-                activeRef.resetZoom();
-              }
-            }}
-            isToolbarVisible={showDrawingToolbar}
-          />
-        }
-        watchlist={
-          activeRightPanel === 'watchlist' ? (
-            <Watchlist
-              currentSymbol={currentSymbol}
-              items={watchlistData}
-              onSymbolSelect={(sym) => {
-                setCharts(prev => prev.map(chart =>
-                  chart.id === activeChartId ? { ...chart, symbol: sym } : chart
-                ));
-              }}
-              onAddClick={handleAddClick}
-              onRemoveClick={handleRemoveFromWatchlist}
-              onReorder={handleWatchlistReorder}
-            />
-          ) : activeRightPanel === 'alerts' ? (
-            <AlertsPanel
-              alerts={alerts}
-              logs={alertLogs}
-              onRemoveAlert={handleRemoveAlert}
-              onRestartAlert={handleRestartAlert}
-              onPauseAlert={handlePauseAlert}
-            />
-          ) : null
-        }
-        rightToolbar={
-          <RightToolbar
-            activePanel={activeRightPanel}
-            onPanelChange={handleRightPanelToggle}
-            badges={{ alerts: unreadAlertCount }}
-          />
-        }
-        chart={
-          <ChartGrid
-            charts={charts}
-            layout={layout}
-            activeChartId={activeChartId}
-            onActiveChartChange={setActiveChartId}
-            chartRefs={chartRefs}
-            onAlertsSync={handleChartAlertsSync}
-            onAlertTriggered={handleChartAlertTriggered}
-            onReplayModeChange={handleReplayModeChange}
-            // Common props
-            chartType={chartType}
-            // indicators={indicators} // Handled per chart now
-            activeTool={activeTool}
-            onToolUsed={handleToolUsed}
-            isLogScale={isLogScale}
-            isAutoScale={isAutoScale}
-            magnetMode={isMagnetMode}
-            timeRange={currentTimeRange}
-            isToolbarVisible={showDrawingToolbar}
-            theme={theme}
-            isDrawingsLocked={isDrawingsLocked}
-            isDrawingsHidden={isDrawingsHidden}
-            isTimerVisible={isTimerVisible}
-          />
-        }
       />
+
+      {/* Keep the rest of the UI (SymbolSearch, Toasts, AlertDialog) unchanged */}
       <SymbolSearch
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}

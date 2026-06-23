@@ -80,6 +80,14 @@ const ChartComponent = forwardRef(({
     isDrawingsHidden = false,
     isTimerVisible = false,
 }, ref) => {
+
+    const markerRefs = useRef([]);
+    const lineRefs = useRef([]);
+    const markerCounter = useRef(0);
+    const lineCounter = useRef(0);
+    const markerCounterRef = useRef(0);
+    const lineCounterRef = useRef(0);
+
     const chartContainerRef = useRef();
     const [isLoading, setIsLoading] = useState(true);
     const isActuallyLoadingRef = useRef(true); // Track if we're actually loading data (not just updating indicators) - start as true on mount
@@ -160,159 +168,227 @@ const ChartComponent = forwardRef(({
     }, [chartType]);
 
     // Expose undo/redo and line tool manager to parent
-    useImperativeHandle(ref, () => ({
-        undo: () => {
-            if (lineToolManagerRef.current) lineToolManagerRef.current.undo();
-        },
-        redo: () => {
-            if (lineToolManagerRef.current) lineToolManagerRef.current.redo();
-        },
-        getLineToolManager: () => lineToolManagerRef.current,
-        clearTools: () => {
-            if (lineToolManagerRef.current) lineToolManagerRef.current.clearTools();
-        },
-        addPriceAlert: (alert) => {
-            // Bridge App-level alerts to the line-tools UserPriceAlerts primitive
-            // WITHOUT opening an extra dialog – just create the alert directly.
-            try {
-                const manager = lineToolManagerRef.current;
-                const userAlerts = manager && manager._userPriceAlerts;
-                if (!userAlerts || !alert || alert.price == null) return;
-
-                if (typeof userAlerts.setSymbolName === 'function') {
-                    userAlerts.setSymbolName(symbol);
-                }
-
-                const priceNum = Number(alert.price);
-                if (!Number.isFinite(priceNum)) return;
-
-                // Directly add the alert with a simple crossing condition so it
-                // is rendered on the chart without another confirmation dialog.
-                if (typeof userAlerts.addAlertWithCondition === 'function') {
-                    userAlerts.addAlertWithCondition(priceNum, 'crossing');
-                } else if (typeof userAlerts.openEditDialog === 'function') {
-                    // Fallback for older builds: still ensure it works, even if
-                    // it means showing the internal dialog.
-                    userAlerts.openEditDialog(alert.id, {
-                        price: priceNum,
-                        condition: 'crossing',
-                    });
-                }
-            } catch (err) {
-                console.warn('Failed to add price alert to chart', err);
+useImperativeHandle(ref, () => ({
+    undo: () => {
+        if (lineToolManagerRef.current) lineToolManagerRef.current.undo();
+    },
+    redo: () => {
+        if (lineToolManagerRef.current) lineToolManagerRef.current.redo();
+    },
+    getLineToolManager: () => lineToolManagerRef.current,
+    clearTools: () => {
+        if (lineToolManagerRef.current) lineToolManagerRef.current.clearTools();
+    },
+    addPriceAlert: (alert) => {
+        try {
+            const manager = lineToolManagerRef.current;
+            const userAlerts = manager && manager._userPriceAlerts;
+            if (!userAlerts || !alert || alert.price == null) return;
+            if (typeof userAlerts.setSymbolName === 'function') {
+                userAlerts.setSymbolName(symbol);
             }
-        },
-        removePriceAlert: (externalId) => {
-            try {
-                const manager = lineToolManagerRef.current;
-                const userAlerts = manager && manager._userPriceAlerts;
-                if (!userAlerts || !externalId) return;
-
-                if (typeof userAlerts.removeAlert === 'function') {
-                    userAlerts.removeAlert(externalId);
-                }
-            } catch (err) {
-                console.warn('Failed to remove price alert from chart', err);
+            const priceNum = Number(alert.price);
+            if (!Number.isFinite(priceNum)) return;
+            if (typeof userAlerts.addAlertWithCondition === 'function') {
+                userAlerts.addAlertWithCondition(priceNum, 'crossing');
+            } else if (typeof userAlerts.openEditDialog === 'function') {
+                userAlerts.openEditDialog(alert.id, {
+                    price: priceNum,
+                    condition: 'crossing',
+                });
             }
-        },
-        restartPriceAlert: (price, condition = 'crossing') => {
-            try {
-                const manager = lineToolManagerRef.current;
-                const userAlerts = manager && manager._userPriceAlerts;
-                if (!userAlerts || price == null) return;
-
-                const priceNum = Number(price);
-                if (!Number.isFinite(priceNum)) return;
-
-                if (typeof userAlerts.addAlertWithCondition === 'function') {
-                    userAlerts.addAlertWithCondition(priceNum, condition === 'crossing' ? 'crossing' : condition);
-                }
-            } catch (err) {
-                console.warn('Failed to restart price alert on chart', err);
-            }
-        },
-        resetZoom: () => {
-            applyDefaultCandlePosition(dataRef.current.length);
-        },
-        getChartContainer: () => chartContainerRef.current,
-        getCurrentPrice: () => {
-            if (dataRef.current && dataRef.current.length > 0) {
-                const lastData = dataRef.current[dataRef.current.length - 1];
-                return lastData.close ?? lastData.value;
-            }
-            return null;
-        },
-        toggleTimer: () => {
-            if (priceScaleTimerRef.current) {
-                const isVisible = priceScaleTimerRef.current.isVisible();
-                priceScaleTimerRef.current.setVisible(!isVisible);
-
-                // Toggle native price label: hide when our timer is shown, show when hidden
-                if (mainSeriesRef.current) {
-                    mainSeriesRef.current.applyOptions({
-                        lastValueVisible: isVisible // If timer WAS visible, it IS NOW hidden, so show native label
-                    });
-                }
-
-                return !isVisible;
-            }
-            return false;
-        },
-        toggleReplay: () => {
-            setIsReplayMode(prev => {
-                const newMode = !prev;
-                if (!prev) {
-                    // Entering replay mode
-                    fullDataRef.current = [...dataRef.current];
-                    setIsPlaying(false);
-                    isPlayingRef.current = false;
-                    const startIndex = Math.max(0, dataRef.current.length - 1);
-                    setReplayIndex(startIndex);
-                    replayIndexRef.current = startIndex;
-                    // Initialize replay data display - show all candles initially
-                    setTimeout(() => {
-                        if (updateReplayDataRef.current) {
-                            updateReplayDataRef.current(startIndex, false);
-                        }
-                    }, 0);
-                } else {
-                    // Exiting replay mode
-                    stopReplay();
-                    setIsPlaying(false);
-                    isPlayingRef.current = false;
-                    setReplayIndex(null);
-                    replayIndexRef.current = null;
-                    setIsSelectingReplayPoint(false);
-
-                    // Clean up faded series (if we were using it)
-                    if (fadedSeriesRef.current && chartRef.current) {
-                        try {
-                            chartRef.current.removeSeries(fadedSeriesRef.current);
-                        } catch (e) {
-                            console.warn('Error removing faded series:', e);
-                        }
-                        fadedSeriesRef.current = null;
-                    }
-
-
-                    // Restore full data
-                    if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                        dataRef.current = fullDataRef.current;
-                        const transformedData = transformData(fullDataRef.current, chartTypeRef.current);
-                        mainSeriesRef.current.setData(transformedData);
-                        updateIndicators(fullDataRef.current, indicators);
-                    }
-                }
-
-                // Notify parent about replay mode change
-                if (onReplayModeChange) {
-                    setTimeout(() => onReplayModeChange(newMode), 0);
-                }
-
-                return newMode;
-            });
+        } catch (err) {
+            console.warn('Failed to add price alert to chart', err);
         }
-    }));
+    },
+    removePriceAlert: (externalId) => {
+        try {
+            const manager = lineToolManagerRef.current;
+            const userAlerts = manager && manager._userPriceAlerts;
+            if (!userAlerts || !externalId) return;
+            if (typeof userAlerts.removeAlert === 'function') {
+                userAlerts.removeAlert(externalId);
+            }
+        } catch (err) {
+            console.warn('Failed to remove price alert from chart', err);
+        }
+    },
+    restartPriceAlert: (price, condition = 'crossing') => {
+        try {
+            const manager = lineToolManagerRef.current;
+            const userAlerts = manager && manager._userPriceAlerts;
+            if (!userAlerts || price == null) return;
+            const priceNum = Number(price);
+            if (!Number.isFinite(priceNum)) return;
+            if (typeof userAlerts.addAlertWithCondition === 'function') {
+                userAlerts.addAlertWithCondition(priceNum, condition === 'crossing' ? 'crossing' : condition);
+            }
+        } catch (err) {
+            console.warn('Failed to restart price alert on chart', err);
+        }
+    },
+    resetZoom: () => {
+        applyDefaultCandlePosition(dataRef.current.length);
+    },
+    getChartContainer: () => chartContainerRef.current,
+    getCurrentPrice: () => {
+        if (dataRef.current && dataRef.current.length > 0) {
+            const lastData = dataRef.current[dataRef.current.length - 1];
+            return lastData.close ?? lastData.value;
+        }
+        return null;
+    },
+    // --- NEW METHODS for trading markers ---
+  getCurrentTime: () => {
+    if (dataRef.current && dataRef.current.length > 0) {
+      return dataRef.current[dataRef.current.length - 1].time;
+    }
+    return Math.floor(Date.now() / 1000);
+  },
+addMarker: (time, price, text, color) => {
+  if (!chartRef.current) return null;
+  try {
+    const series = chartRef.current.addLineSeries({
+      color: color || '#2962FF',
+      lineWidth: 0,           // invisible line
+      pointMarkersVisible: true,
+      pointMarkerColor: color || '#2962FF',
+      pointMarkerShape: 'circle',
+      pointMarkerSize: 10,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      title: text || '',
+    });
+    series.setData([{ time, value: price }]);
+    // Store for removal
+    if (!window._markers) window._markers = [];
+    const id = window._markers.length;
+    window._markers.push({ series, chart: chartRef.current });
+    return id;
+  } catch (e) {
+    console.warn('Failed to add marker:', e);
+    return null;
+  }
+},
+
+addHorizontalLine: (price, color, label) => {
+  if (!chartRef.current) return null;
+  try {
+    const series = chartRef.current.addLineSeries({
+      color: color || '#2962FF',
+      lineWidth: 2,
+      lineStyle: 2,           // dashed
+      priceLineVisible: false,
+      lastValueVisible: false,
+      title: label || '',
+    });
+    // Span the line across the entire data range
+    const data = dataRef.current;
+    if (data && data.length > 1) {
+      const startTime = data[0].time;
+      const endTime = data[data.length - 1].time;
+      series.setData([
+        { time: startTime, value: price },
+        { time: endTime, value: price }
+      ]);
+    } else {
+      // Fallback: use current visible range
+      const timeScale = chartRef.current.timeScale();
+      const visibleRange = timeScale.getVisibleRange();
+      if (visibleRange) {
+        const startTime = visibleRange.from;
+        const endTime = visibleRange.to;
+        series.setData([
+          { time: startTime, value: price },
+          { time: endTime, value: price }
+        ]);
+      } else {
+        chartRef.current.removeSeries(series);
+        return null;
+      }
+    }
+    // Store for removal
+    if (!window._lines) window._lines = [];
+    const id = window._lines.length;
+    window._lines.push({ series, chart: chartRef.current });
+    return id;
+  } catch (e) {
+    console.warn('Failed to add horizontal line:', e);
+    return null;
+  }
+},
+
+removeObject: (id) => {
+  // Remove marker (LineSeries)
+  if (window._markers && window._markers[id]) {
+    const { series, chart } = window._markers[id];
+    try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+    delete window._markers[id];
+    return;
+  }
+  // Remove line (LineSeries)
+  if (window._lines && window._lines[id]) {
+    const { series, chart } = window._lines[id];
+    try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+    delete window._lines[id];
+  }
+},
+    // --- END NEW METHODS ---
+    toggleTimer: () => {
+        if (priceScaleTimerRef.current) {
+            const isVisible = priceScaleTimerRef.current.isVisible();
+            priceScaleTimerRef.current.setVisible(!isVisible);
+            if (mainSeriesRef.current) {
+                mainSeriesRef.current.applyOptions({
+                    lastValueVisible: isVisible
+                });
+            }
+            return !isVisible;
+        }
+        return false;
+    },
+    toggleReplay: () => {
+        setIsReplayMode(prev => {
+            const newMode = !prev;
+            if (!prev) {
+                fullDataRef.current = [...dataRef.current];
+                setIsPlaying(false);
+                isPlayingRef.current = false;
+                const startIndex = Math.max(0, dataRef.current.length - 1);
+                setReplayIndex(startIndex);
+                replayIndexRef.current = startIndex;
+                setTimeout(() => {
+                    if (updateReplayDataRef.current) {
+                        updateReplayDataRef.current(startIndex, false);
+                    }
+                }, 0);
+            } else {
+                stopReplay();
+                setIsPlaying(false);
+                isPlayingRef.current = false;
+                setReplayIndex(null);
+                replayIndexRef.current = null;
+                setIsSelectingReplayPoint(false);
+                if (fadedSeriesRef.current && chartRef.current) {
+                    try {
+                        chartRef.current.removeSeries(fadedSeriesRef.current);
+                    } catch (e) { /* ignore */ }
+                    fadedSeriesRef.current = null;
+                }
+                if (mainSeriesRef.current && fullDataRef.current.length > 0) {
+                    dataRef.current = fullDataRef.current;
+                    const transformedData = transformData(fullDataRef.current, chartTypeRef.current);
+                    mainSeriesRef.current.setData(transformedData);
+                    updateIndicators(fullDataRef.current, indicators);
+                }
+            }
+            if (onReplayModeChange) {
+                setTimeout(() => onReplayModeChange(newMode), 0);
+            }
+            return newMode;
+        });
+    }
+}));
 
     // Helper function for zooming the chart
     const zoomChart = useCallback((zoomIn = true) => {
@@ -2087,6 +2163,14 @@ const ChartComponent = forwardRef(({
             }
         };
     }, [isSelectingReplayPoint, updateReplayData]);
+
+useEffect(() => {
+  return () => {
+    // Clean up global marker/line storage
+    window._markers = [];
+    window._lines = [];
+  };
+}, []);
 
     return (
         <div className={`${styles.chartWrapper} ${isToolbarVisible ? styles.toolbarVisible : ''}`}>
