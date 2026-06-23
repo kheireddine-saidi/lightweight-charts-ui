@@ -238,6 +238,19 @@ useImperativeHandle(ref, () => ({
         }
         return null;
     },
+    getCurrentOHLC: () => {
+        if (dataRef.current && dataRef.current.length > 0) {
+            const lastData = dataRef.current[dataRef.current.length - 1];
+            return {
+                open: lastData.open,
+                high: lastData.high,
+                low: lastData.low,
+                close: lastData.close ?? lastData.value,
+                time: lastData.time,
+            };
+        }
+        return null;
+    },
     // --- NEW METHODS for trading markers ---
   getCurrentTime: () => {
     if (dataRef.current && dataRef.current.length > 0) {
@@ -250,20 +263,19 @@ addMarker: (time, price, text, color) => {
   try {
     const series = chartRef.current.addLineSeries({
       color: color || '#2962FF',
-      lineWidth: 0,           // invisible line
-      pointMarkersVisible: true,
-      pointMarkerColor: color || '#2962FF',
-      pointMarkerShape: 'circle',
-      pointMarkerSize: 10,
+      lineWidth: 0,
       lastValueVisible: false,
       priceLineVisible: false,
       title: text || '',
     });
+    // Use a price line as a visual "marker" — more stable than point markers
     series.setData([{ time, value: price }]);
-    // Store for removal
-    if (!window._markers) window._markers = [];
-    const id = window._markers.length;
-    window._markers.push({ series, chart: chartRef.current });
+    series.applyOptions({
+      pointMarkersVisible: true,
+    });
+    if (!window._tradeMarkers) window._tradeMarkers = {};
+    const id = 'tm_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    window._tradeMarkers[id] = { series, chart: chartRef.current };
     return id;
   } catch (e) {
     console.warn('Failed to add marker:', e);
@@ -276,41 +288,24 @@ addHorizontalLine: (price, color, label) => {
   try {
     const series = chartRef.current.addLineSeries({
       color: color || '#2962FF',
-      lineWidth: 2,
-      lineStyle: 2,           // dashed
+      lineWidth: 1,
+      lineStyle: 2, // dashed
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
       title: label || '',
+      crosshairMarkerVisible: false,
     });
-    // Span the line across the entire data range
     const data = dataRef.current;
-    if (data && data.length > 1) {
-      const startTime = data[0].time;
-      const endTime = data[data.length - 1].time;
-      series.setData([
-        { time: startTime, value: price },
-        { time: endTime, value: price }
-      ]);
-    } else {
-      // Fallback: use current visible range
-      const timeScale = chartRef.current.timeScale();
-      const visibleRange = timeScale.getVisibleRange();
-      if (visibleRange) {
-        const startTime = visibleRange.from;
-        const endTime = visibleRange.to;
-        series.setData([
-          { time: startTime, value: price },
-          { time: endTime, value: price }
-        ]);
-      } else {
-        chartRef.current.removeSeries(series);
-        return null;
-      }
-    }
-    // Store for removal
-    if (!window._lines) window._lines = [];
-    const id = window._lines.length;
-    window._lines.push({ series, chart: chartRef.current });
+    const startTime = data && data.length > 0 ? data[0].time : Math.floor(Date.now() / 1000) - 86400;
+    // Extend far into the future so line stays visible during replay
+    const endTime = startTime + 60 * 60 * 24 * 365 * 10;
+    series.setData([
+      { time: startTime, value: price },
+      { time: endTime, value: price },
+    ]);
+    if (!window._tradeLines) window._tradeLines = {};
+    const id = 'tl_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    window._tradeLines[id] = { series, chart: chartRef.current };
     return id;
   } catch (e) {
     console.warn('Failed to add horizontal line:', e);
@@ -318,19 +313,33 @@ addHorizontalLine: (price, color, label) => {
   }
 },
 
-removeObject: (id) => {
-  // Remove marker (LineSeries)
-  if (window._markers && window._markers[id]) {
-    const { series, chart } = window._markers[id];
-    try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-    delete window._markers[id];
-    return;
-  }
-  // Remove line (LineSeries)
-  if (window._lines && window._lines[id]) {
-    const { series, chart } = window._lines[id];
-    try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-    delete window._lines[id];
+removeObject: (id, type) => {
+  // type hint: 'marker' | 'line' — or auto-detect by prefix
+  if (!id) return;
+  if (id.startsWith('tm_') || type === 'marker') {
+    if (window._tradeMarkers && window._tradeMarkers[id]) {
+      const { series, chart } = window._tradeMarkers[id];
+      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+      delete window._tradeMarkers[id];
+    }
+  } else if (id.startsWith('tl_') || type === 'line') {
+    if (window._tradeLines && window._tradeLines[id]) {
+      const { series, chart } = window._tradeLines[id];
+      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+      delete window._tradeLines[id];
+    }
+  } else {
+    // Try both
+    if (window._tradeMarkers && window._tradeMarkers[id]) {
+      const { series, chart } = window._tradeMarkers[id];
+      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+      delete window._tradeMarkers[id];
+    }
+    if (window._tradeLines && window._tradeLines[id]) {
+      const { series, chart } = window._tradeLines[id];
+      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+      delete window._tradeLines[id];
+    }
   }
 },
     // --- END NEW METHODS ---
@@ -2166,9 +2175,9 @@ removeObject: (id) => {
 
 useEffect(() => {
   return () => {
-    // Clean up global marker/line storage
-    window._markers = [];
-    window._lines = [];
+    // Clean up global trade marker/line storage on unmount
+    window._tradeMarkers = {};
+    window._tradeLines = {};
   };
 }, []);
 

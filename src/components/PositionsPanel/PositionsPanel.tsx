@@ -1,184 +1,410 @@
-// components/PositionsPanel/PositionsPanel.jsx
+// components/PositionsPanel/PositionsPanel.tsx
 import React, { useState } from 'react';
 import styled from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
 
-const Container = styled.div`
+/* ─── Design tokens ─── */
+const C = {
+  bg: '#131722',
+  surface: '#1e222d',
+  surfaceAlt: '#252b3b',
+  border: '#2a2e39',
+  text: '#d1d4dc',
+  textMuted: '#787b86',
+  textDim: '#555b6e',
+  green: '#089981',
+  greenMuted: 'rgba(8,153,129,0.12)',
+  red: '#f23645',
+  redMuted: 'rgba(242,54,69,0.12)',
+  blue: '#2962ff',
+  orange: '#f0a500',
+  orangeMuted: 'rgba(240,165,0,0.12)',
+};
+
+const Wrap = styled.div`
   display: flex;
   flex-direction: column;
   height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  font-size: 12px;
+  color: ${C.text};
+  overflow: hidden;
 `;
 
-const Tabs = styled.div`
+const TabBar = styled.div`
   display: flex;
-  gap: 16px;
-  border-bottom: 1px solid #2a2e39;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
+  border-bottom: 1px solid ${C.border};
+  flex-shrink: 0;
 `;
 
-const Tab = styled.button`
+const Tab = styled.button<{ $active: boolean }>`
+  padding: 8px 14px;
   background: none;
   border: none;
-  color: ${(props) => (props.$active ? '#d1d4dc' : '#787b86')};
-  font-size: 14px;
-  font-weight: ${(props) => (props.$active ? '600' : '400')};
+  border-bottom: 2px solid ${(p) => (p.$active ? C.blue : 'transparent')};
+  color: ${(p) => (p.$active ? C.text : C.textMuted)};
+  font-size: 12px;
+  font-weight: ${(p) => (p.$active ? '600' : '400')};
   cursor: pointer;
-  padding: 4px 0;
-  border-bottom: ${(props) => (props.$active ? '2px solid #2962ff' : 'none')};
-  &:hover {
-    color: #d1d4dc;
-  }
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s;
+  margin-bottom: -1px;
+  &:hover { color: ${C.text}; }
+`;
+
+const Badge = styled.span`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: ${C.surfaceAlt};
+  color: ${C.textMuted};
+  font-size: 10px;
+  font-weight: 600;
+`;
+
+const ScrollArea = styled.div`
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  &::-webkit-scrollbar { width: 4px; height: 4px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 2px; }
+`;
+
+const EmptyState = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 6px;
+  color: ${C.textDim};
+  font-size: 12px;
 `;
 
 const Table = styled.table`
   width: 100%;
-  font-size: 13px;
   border-collapse: collapse;
-  th {
-    text-align: left;
-    padding: 6px 8px;
-    color: #787b86;
-    font-weight: 400;
-    border-bottom: 1px solid #2a2e39;
-  }
-  td {
-    padding: 6px 8px;
-    border-bottom: 1px solid #2a2e39;
-  }
+  min-width: 600px;
 `;
 
-const SideBadge = styled.span`
-  padding: 2px 8px;
+const TH = styled.th`
+  padding: 6px 10px;
+  text-align: left;
+  color: ${C.textMuted};
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid ${C.border};
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: ${C.surface};
+  z-index: 1;
+`;
+
+const TR = styled.tr`
+  &:hover td { background: ${C.surfaceAlt}; }
+  &:not(:last-child) td { border-bottom: 1px solid ${C.border}; }
+`;
+
+const TD = styled.td`
+  padding: 7px 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: background 0.1s;
+`;
+
+const SidePill = styled.span<{ $side: string }>`
+  display: inline-block;
+  padding: 2px 7px;
   border-radius: 3px;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: ${(p) => (p.$side === 'long' ? C.greenMuted : C.redMuted)};
+  color: ${(p) => (p.$side === 'long' ? C.green : C.red)};
+`;
+
+const PendingPill = styled.span`
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  background: ${C.orangeMuted};
+  color: ${C.orange};
+`;
+
+const PnLCell = styled.span<{ $val: number }>`
+  color: ${(p) => (p.$val >= 0 ? C.green : C.red)};
   font-weight: 600;
-  background: ${(props) => (props.$side === 'long' ? '#00b89433' : '#ff6b6b33')};
-  color: ${(props) => (props.$side === 'long' ? '#00b894' : '#ff6b6b')};
 `;
 
-const PnL = styled.span`
-  color: ${(props) => (props.$value >= 0 ? '#00b894' : '#ff6b6b')};
-`;
-
-const CloseButton = styled.button`
-  padding: 4px 12px;
-  background: #ff6b6b;
-  border: none;
-  border-radius: 3px;
-  color: #fff;
+const ActionBtn = styled.button`
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid ${C.border};
+  background: transparent;
+  color: ${C.textMuted};
+  font-size: 11px;
   cursor: pointer;
-  font-size: 12px;
+  transition: all 0.1s;
   &:hover {
-    opacity: 0.85;
+    border-color: ${C.red};
+    color: ${C.red};
+    background: ${C.redMuted};
   }
 `;
 
-const OpenPositions = () => {
-  const positions = useTradingStore((state) => state.positions);
-  const closePosition = useTradingStore((state) => state.closePosition);
-  const currentPrice = useMarketStore((state) => state.currentPrice);
+const SummaryRow = styled.div`
+  display: flex;
+  gap: 20px;
+  padding: 6px 10px;
+  border-top: 1px solid ${C.border};
+  background: ${C.surface};
+  flex-shrink: 0;
+`;
 
-  if (positions.length === 0) {
-    return <div style={{ padding: '20px', color: '#787b86', textAlign: 'center' }}>No open positions</div>;
+const SumItem = styled.div`
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 11px;
+`;
+
+const SumLabel = styled.span`
+  color: ${C.textMuted};
+`;
+
+const SumVal = styled.span<{ $color?: string }>`
+  color: ${(p) => p.$color || C.text};
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+`;
+
+/* ─── Tabs ─── */
+const OpenTab = () => {
+  const positions = useTradingStore((s) => s.positions);
+  const pendingOrders = useTradingStore((s) => s.pendingOrders);
+  const closePosition = useTradingStore((s) => s.closePosition);
+  const cancelPendingOrder = useTradingStore((s) => s.cancelPendingOrder);
+  const currentPrice = useMarketStore((s) => s.currentPrice);
+
+  const totalPnL = positions.reduce((s, p) => s + p.pnl, 0);
+  const allItems = [...positions, ...pendingOrders];
+
+  if (allItems.length === 0) {
+    return <EmptyState>📭 No open positions or pending orders</EmptyState>;
   }
+
+  const fmt = (n: number, dec = 5) => n.toFixed(dec);
 
   return (
-    <Table>
-      <thead>
-        <tr>
-          <th>Side</th>
-          <th>Leverage</th>
-          <th>Size</th>
-          <th>Entry</th>
-          <th>PnL</th>
-          <th>SL/TP</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {positions.map((pos) => (
-          <tr key={pos.id}>
-            <td>
-              <SideBadge $side={pos.side}>{pos.side.toUpperCase()}</SideBadge>
-            </td>
-            <td>{pos.leverage}x</td>
-            <td>{pos.positionSize}</td>
-            <td>{pos.entryPrice.toFixed(5)}</td>
-            <td>
-              <PnL $value={pos.pnl}>
-                {pos.pnl >= 0 ? '+' : ''}
-                {pos.pnl.toFixed(2)} ({pos.pnlPercent.toFixed(2)}%)
-              </PnL>
-            </td>
-            <td>
-              {pos.stopLoss || '-'} / {pos.takeProfit || '-'}
-            </td>
-            <td>
-              <CloseButton onClick={() => closePosition(pos.id, currentPrice)}>Close</CloseButton>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </Table>
+    <>
+      <ScrollArea>
+        <Table>
+          <thead>
+            <tr>
+              <TH>Side</TH>
+              <TH>Symbol</TH>
+              <TH>Size</TH>
+              <TH>Lev</TH>
+              <TH>Entry</TH>
+              <TH>Current</TH>
+              <TH>PnL</TH>
+              <TH>SL / TP</TH>
+              <TH>Action</TH>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((pos) => (
+              <TR key={pos.id}>
+                <TD><SidePill $side={pos.side}>{pos.side.toUpperCase()}</SidePill></TD>
+                <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
+                <TD>{pos.positionSize}</TD>
+                <TD>{pos.leverage}×</TD>
+                <TD>{fmt(pos.entryPrice)}</TD>
+                <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
+                <TD>
+                  <PnLCell $val={pos.pnl}>
+                    {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
+                    <span style={{ color: C.textDim, fontWeight: 400, fontSize: 10, marginLeft: 3 }}>
+                      ({pos.pnlPercent >= 0 ? '+' : ''}{pos.pnlPercent.toFixed(2)}%)
+                    </span>
+                  </PnLCell>
+                </TD>
+                <TD style={{ color: C.textMuted }}>
+                  {pos.stopLoss ? <span style={{ color: C.red }}>{fmt(pos.stopLoss)}</span> : '—'}
+                  {' / '}
+                  {pos.takeProfit ? <span style={{ color: C.green }}>{fmt(pos.takeProfit)}</span> : '—'}
+                </TD>
+                <TD>
+                  <ActionBtn onClick={() => closePosition(pos.id, currentPrice)}>Close</ActionBtn>
+                </TD>
+              </TR>
+            ))}
+            {pendingOrders.map((order) => (
+              <TR key={order.id}>
+                <TD>
+                  <PendingPill>LIMIT {order.side.toUpperCase()}</PendingPill>
+                </TD>
+                <TD style={{ color: C.text, fontWeight: 500 }}>{order.symbol}</TD>
+                <TD>{order.positionSize}</TD>
+                <TD>{order.leverage}×</TD>
+                <TD style={{ color: C.orange }}>{fmt(order.entryPrice)}</TD>
+                <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
+                <TD style={{ color: C.textDim }}>—</TD>
+                <TD style={{ color: C.textMuted }}>
+                  {order.stopLoss ? <span style={{ color: C.red }}>{fmt(order.stopLoss)}</span> : '—'}
+                  {' / '}
+                  {order.takeProfit ? <span style={{ color: C.green }}>{fmt(order.takeProfit)}</span> : '—'}
+                </TD>
+                <TD>
+                  <ActionBtn onClick={() => cancelPendingOrder(order.id)}>Cancel</ActionBtn>
+                </TD>
+              </TR>
+            ))}
+          </tbody>
+        </Table>
+      </ScrollArea>
+      {positions.length > 0 && (
+        <SummaryRow>
+          <SumItem>
+            <SumLabel>Open P&L:</SumLabel>
+            <SumVal $color={totalPnL >= 0 ? C.green : C.red}>
+              {totalPnL >= 0 ? '+' : ''}{totalPnL.toFixed(2)}
+            </SumVal>
+          </SumItem>
+          <SumItem>
+            <SumLabel>Positions:</SumLabel>
+            <SumVal>{positions.length}</SumVal>
+          </SumItem>
+          {pendingOrders.length > 0 && (
+            <SumItem>
+              <SumLabel>Pending:</SumLabel>
+              <SumVal $color={C.orange}>{pendingOrders.length}</SumVal>
+            </SumItem>
+          )}
+        </SummaryRow>
+      )}
+    </>
   );
 };
 
 const HistoryTab = () => {
-  const closedPositions = useTradingStore((state) => state.closedPositions);
+  const closedPositions = useTradingStore((s) => s.closedPositions);
 
   if (closedPositions.length === 0) {
-    return <div style={{ padding: '20px', color: '#787b86', textAlign: 'center' }}>No history</div>;
+    return <EmptyState>📋 No trade history yet</EmptyState>;
   }
 
+  const totalPnL = closedPositions.reduce((s, p) => s + p.pnl, 0);
+  const wins = closedPositions.filter((p) => p.pnl > 0).length;
+  const winRate = closedPositions.length > 0 ? (wins / closedPositions.length) * 100 : 0;
+  const fmt = (n: number, dec = 5) => n.toFixed(dec);
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+
   return (
-    <Table>
-      <thead>
-        <tr>
-          <th>Side</th>
-          <th>Size</th>
-          <th>Entry</th>
-          <th>Exit</th>
-          <th>PnL</th>
-        </tr>
-      </thead>
-      <tbody>
-        {closedPositions.map((pos) => (
-          <tr key={pos.id}>
-            <td>
-              <SideBadge $side={pos.side}>{pos.side.toUpperCase()}</SideBadge>
-            </td>
-            <td>{pos.positionSize}</td>
-            <td>{pos.entryPrice.toFixed(5)}</td>
-            <td>{pos.closePrice.toFixed(5)}</td>
-            <td>
-              <PnL $value={pos.pnl}>{pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}</PnL>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </Table>
+    <>
+      <ScrollArea>
+        <Table>
+          <thead>
+            <tr>
+              <TH>Side</TH>
+              <TH>Symbol</TH>
+              <TH>Size / Lev</TH>
+              <TH>Entry</TH>
+              <TH>Exit</TH>
+              <TH>PnL</TH>
+              <TH>% Return</TH>
+              <TH>Closed At</TH>
+            </tr>
+          </thead>
+          <tbody>
+            {closedPositions.map((pos) => (
+              <TR key={pos.id}>
+                <TD><SidePill $side={pos.side}>{pos.side.toUpperCase()}</SidePill></TD>
+                <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
+                <TD style={{ color: C.textMuted }}>{pos.positionSize} · {pos.leverage}×</TD>
+                <TD>{fmt(pos.entryPrice)}</TD>
+                <TD>{fmt(pos.closePrice)}</TD>
+                <TD>
+                  <PnLCell $val={pos.pnl}>
+                    {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
+                  </PnLCell>
+                </TD>
+                <TD>
+                  <PnLCell $val={pos.pnlPercent}>
+                    {pos.pnlPercent >= 0 ? '+' : ''}{pos.pnlPercent.toFixed(2)}%
+                  </PnLCell>
+                </TD>
+                <TD style={{ color: C.textMuted, fontSize: 11 }}>
+                  {pos.closeTime ? formatTime(pos.closeTime) : '—'}
+                </TD>
+              </TR>
+            ))}
+          </tbody>
+        </Table>
+      </ScrollArea>
+      <SummaryRow>
+        <SumItem>
+          <SumLabel>Total P&L:</SumLabel>
+          <SumVal $color={totalPnL >= 0 ? C.green : C.red}>
+            {totalPnL >= 0 ? '+' : ''}{totalPnL.toFixed(2)}
+          </SumVal>
+        </SumItem>
+        <SumItem>
+          <SumLabel>Win Rate:</SumLabel>
+          <SumVal $color={winRate >= 50 ? C.green : C.red}>{winRate.toFixed(0)}%</SumVal>
+        </SumItem>
+        <SumItem>
+          <SumLabel>Trades:</SumLabel>
+          <SumVal>{closedPositions.length}</SumVal>
+        </SumItem>
+        <SumItem>
+          <SumLabel>W/L:</SumLabel>
+          <SumVal>{wins}/{closedPositions.length - wins}</SumVal>
+        </SumItem>
+      </SummaryRow>
+    </>
   );
 };
 
-const PositionsPanel = () => {
-  const [activeTab, setActiveTab] = useState('open');
-  const positions = useTradingStore((state) => state.positions);
-  const closedPositions = useTradingStore((state) => state.closedPositions);
+const PositionsPanel: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'open' | 'history'>('open');
+  const positions = useTradingStore((s) => s.positions);
+  const pendingOrders = useTradingStore((s) => s.pendingOrders);
+  const closedPositions = useTradingStore((s) => s.closedPositions);
 
   return (
-    <Container>
-      <Tabs>
+    <Wrap>
+      <TabBar>
         <Tab $active={activeTab === 'open'} onClick={() => setActiveTab('open')}>
-          Open Positions ({positions.length})
+          Positions
+          {(positions.length + pendingOrders.length) > 0 && (
+            <Badge>{positions.length + pendingOrders.length}</Badge>
+          )}
         </Tab>
         <Tab $active={activeTab === 'history'} onClick={() => setActiveTab('history')}>
-          History ({closedPositions.length})
+          History
+          {closedPositions.length > 0 && <Badge>{closedPositions.length}</Badge>}
         </Tab>
-      </Tabs>
-      {activeTab === 'open' ? <OpenPositions /> : <HistoryTab />}
-    </Container>
+      </TabBar>
+      {activeTab === 'open' ? <OpenTab /> : <HistoryTab />}
+    </Wrap>
   );
 };
 

@@ -6,8 +6,8 @@ import PositionsPanel from '../PositionsPanel/PositionsPanel';
 
 const Layout = styled.div`
   display: grid;
-  grid-template-columns: 1fr 320px;
-  grid-template-rows: 1fr 280px;
+  grid-template-columns: 1fr 280px;
+  grid-template-rows: 1fr 240px;
   height: 100vh;
   width: 100vw;
   background: #131722;
@@ -20,7 +20,7 @@ const ChartArea = styled.div`
   position: relative;
   background: #131722;
   overflow: hidden;
-  padding-top: 48px; /* topbar height – chart starts below it */
+  padding-top: 48px;
 `;
 
 const ChartOverlay = styled.div`
@@ -48,7 +48,7 @@ const TopbarWrapper = styled.div`
 
 const LeftToolbarWrapper = styled.div`
   position: absolute;
-  top: 48px; /* below topbar */
+  top: 48px;
   left: 0;
   z-index: 10;
 `;
@@ -59,7 +59,8 @@ const TradingPanelArea = styled.div`
   background: #1e222d;
   border-left: 1px solid #2a2e39;
   overflow-y: auto;
-  padding: 16px;
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 2px; }
 `;
 
 const PositionsArea = styled.div`
@@ -67,15 +68,16 @@ const PositionsArea = styled.div`
   grid-column: 1 / 3;
   background: #1e222d;
   border-top: 1px solid #2a2e39;
-  overflow-y: auto;
-  padding: 8px 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 `;
 
 interface AppLayoutProps {
   chart: React.ReactNode;
   topbar?: React.ReactNode;
   leftToolbar?: React.ReactNode;
-  currentTime?: number; // new prop
+  currentTime?: number;
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({ chart, topbar, leftToolbar, currentTime }) => {

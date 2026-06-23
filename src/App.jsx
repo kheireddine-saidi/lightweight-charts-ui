@@ -1033,7 +1033,13 @@ useEffect(() => {
       const time = activeRef.getCurrentTime?.() || Math.floor(Date.now() / 1000);
       if (price !== null && price !== undefined && !isNaN(price)) {
         useMarketStore.getState().setCurrentPrice(price);
-        useTradingStore.getState().updatePnLAndCheckSLTP(price, time);
+        // Get candle OHLC for accurate SL/TP detection
+        const ohlc = typeof activeRef.getCurrentOHLC === 'function'
+          ? activeRef.getCurrentOHLC()
+          : null;
+        const high = ohlc?.high ?? price;
+        const low = ohlc?.low ?? price;
+        useTradingStore.getState().updatePnLAndCheckSLTP(price, time, high, low);
       }
     }
   }, 100);
