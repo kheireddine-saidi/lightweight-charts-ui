@@ -1048,6 +1048,46 @@ useEffect(() => {
 
 useTradeMarkers(chartRefs, activeChartId);
 
+// ── Replay synchronisation ──────────────────────────────────────────────────
+// When the active chart is in replay mode, poll its current replay timestamp
+// and broadcast it to every other chart via syncToTimestamp().
+// We also pass the master chart's raw OHLC bars so follower charts on a
+// higher timeframe can build their currently-forming candle dynamically,
+// tick-by-tick, exactly as they would in live trading.
+React.useEffect(() => {
+  if (!isReplayMode) {
+    // Replay ended on the active chart → restore all follower charts
+    Object.entries(chartRefs.current).forEach(([id, ref]) => {
+      if (Number(id) !== activeChartId && ref && typeof ref.exitFollowerReplay === 'function') {
+        ref.exitFollowerReplay();
+      }
+    });
+    return;
+  }
+
+  const syncInterval = setInterval(() => {
+    const masterRef = chartRefs.current[activeChartId];
+    if (!masterRef || typeof masterRef.getReplayTimestamp !== 'function') return;
+    const masterTs = masterRef.getReplayTimestamp();
+    if (masterTs === null) return;
+
+    // Get the master's LTF bars up to the current replay point so follower
+    // HTF charts can aggregate them into a live-updating candle.
+    const ltfBars = typeof masterRef.getReplayBars === 'function'
+      ? masterRef.getReplayBars()
+      : [];
+
+    Object.entries(chartRefs.current).forEach(([id, ref]) => {
+      if (Number(id) !== activeChartId && ref && typeof ref.syncToTimestamp === 'function') {
+        ref.syncToTimestamp(masterTs, ltfBars);
+      }
+    });
+  }, 100); // sync every 100 ms — fast enough for smooth playback
+
+  return () => clearInterval(syncInterval);
+}, [isReplayMode, activeChartId, chartRefs]);
+// ───────────────────────────────────────────────────────────────────────────
+
 const getCurrentTime = useCallback(() => {
   const ref = chartRefs.current[activeChartId];
   if (ref && typeof ref.getCurrentTime === 'function') {

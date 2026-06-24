@@ -5,7 +5,8 @@ import {
     BarSeries,
     LineSeries,
     AreaSeries,
-    BaselineSeries
+    BaselineSeries,
+    createSeriesMarkers,
 } from 'lightweight-charts';
 import styles from './ChartComponent.module.css';
 import { getKlines, subscribeToTicker } from '../../services/binance';
@@ -103,6 +104,10 @@ const ChartComponent = forwardRef(({
     const dataRef = useRef([]);
     const comparisonSeriesRefs = useRef(new Map());
 
+    // Trade marker primitive (createSeriesMarkers) attached to main series
+    const tradeMarkersPrimitiveRef = useRef(null); // the SeriesMarkers wrapper
+    const tradeMarkerListRef = useRef([]);          // [{id, time, price, text, color, position, shape}]
+
     // Replay State
     const [isReplayMode, setIsReplayMode] = useState(false);
     const isReplayModeRef = useRef(false); // Ref to track replay mode in callbacks
@@ -113,6 +118,7 @@ const ChartComponent = forwardRef(({
     const [replayIndex, setReplayIndex] = useState(null);
     const [isSelectingReplayPoint, setIsSelectingReplayPoint] = useState(false);
     const fullDataRef = useRef([]); // Store full data for replay
+    const followerFullDataRef = useRef([]); // Immutable snapshot for follower sync — never mutated by replay
     const replayIntervalRef = useRef(null);
     const fadedSeriesRef = useRef(null); // Store faded series for future candles
 
@@ -120,6 +126,8 @@ const ChartComponent = forwardRef(({
     const replayIndexRef = useRef(null);
     const isPlayingRef = useRef(false);
     const updateReplayDataRef = useRef(null); // Ref to store updateReplayData function
+    const transformDataRef = useRef(null);   // Ref to store transformData function
+    const updateIndicatorsRef = useRef(null); // Ref to store updateIndicators function
     useEffect(() => { replayIndexRef.current = replayIndex; }, [replayIndex]);
     useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
 
@@ -258,90 +266,155 @@ useImperativeHandle(ref, () => ({
     }
     return Math.floor(Date.now() / 1000);
   },
-addMarker: (time, price, text, color) => {
-  if (!chartRef.current) return null;
-  try {
-    const series = chartRef.current.addLineSeries({
-      color: color || '#2962FF',
-      lineWidth: 0,
-      lastValueVisible: false,
-      priceLineVisible: false,
-      title: text || '',
-    });
-    // Use a price line as a visual "marker" — more stable than point markers
-    series.setData([{ time, value: price }]);
-    series.applyOptions({
-      pointMarkersVisible: true,
-    });
-    if (!window._tradeMarkers) window._tradeMarkers = {};
-    const id = 'tm_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-    window._tradeMarkers[id] = { series, chart: chartRef.current };
-    return id;
-  } catch (e) {
-    console.warn('Failed to add marker:', e);
-    return null;
-  }
-},
 
-addHorizontalLine: (price, color, label) => {
-  if (!chartRef.current) return null;
-  try {
-    const series = chartRef.current.addLineSeries({
-      color: color || '#2962FF',
-      lineWidth: 1,
-      lineStyle: 2, // dashed
-      priceLineVisible: false,
-      lastValueVisible: true,
-      title: label || '',
-      crosshairMarkerVisible: false,
-    });
-    const data = dataRef.current;
-    const startTime = data && data.length > 0 ? data[0].time : Math.floor(Date.now() / 1000) - 86400;
-    // Extend far into the future so line stays visible during replay
-    const endTime = startTime + 60 * 60 * 24 * 365 * 10;
-    series.setData([
-      { time: startTime, value: price },
-      { time: endTime, value: price },
-    ]);
-    if (!window._tradeLines) window._tradeLines = {};
-    const id = 'tl_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-    window._tradeLines[id] = { series, chart: chartRef.current };
-    return id;
-  } catch (e) {
-    console.warn('Failed to add horizontal line:', e);
-    return null;
-  }
-},
+  /**
+   * Add a trade marker pinned to a specific candle bar.
+   * Uses createSeriesMarkers (v5 API) attached to the main series so the
+   * marker is always positioned exactly at the correct bar, with an arrow
+   * shape and a B/S label.
+   *
+   * @param {number}  time    – Unix timestamp (seconds) of the fill candle
+   * @param {number}  price   – fill price (used to decide above/below bar)
+   * @param {string}  text    – label shown on the marker (e.g. "B", "S", "✕ +12.50")
+   * @param {string}  color   – hex colour
+   * @param {'buy'|'sell'|'close'} [kind='buy'] – controls arrow direction
+   */
+  addMarker: (time, price, text, color, kind) => {
+    if (!mainSeriesRef.current) return null;
+    try {
+      // Snap the requested time to the nearest bar that actually exists in the series.
+      // This is required because createSeriesMarkers positions markers by matching
+      // the time against the series time-scale index. If the time doesn't match an
+      // existing bar exactly, lightweight-charts v5 uses NearestLeft which may end up
+      // on the wrong bar. By snapping here we guarantee exact placement.
+      const data = dataRef.current;
+      let snappedTime = time;
+      if (data && data.length > 0) {
+        // Binary search for the bar whose time is closest to (and <= ) the requested time
+        let lo = 0, hi = data.length - 1, bestIdx = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (data[mid].time <= time) { bestIdx = mid; lo = mid + 1; }
+          else { hi = mid - 1; }
+        }
+        snappedTime = data[bestIdx].time;
+      }
 
-removeObject: (id, type) => {
-  // type hint: 'marker' | 'line' — or auto-detect by prefix
-  if (!id) return;
-  if (id.startsWith('tm_') || type === 'marker') {
-    if (window._tradeMarkers && window._tradeMarkers[id]) {
-      const { series, chart } = window._tradeMarkers[id];
-      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-      delete window._tradeMarkers[id];
+      // Lazy-create the markers primitive once per chart instance
+      if (!tradeMarkersPrimitiveRef.current) {
+        tradeMarkersPrimitiveRef.current = createSeriesMarkers(mainSeriesRef.current, []);
+      }
+
+      const id = 'tm_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+
+      // Determine shape & position from kind/text
+      const isSell = kind === 'sell' || text === 'S';
+      const isClose = kind === 'close' || (typeof text === 'string' && text.startsWith('✕'));
+
+      let shape, position;
+      if (isClose) {
+        shape = 'circle';
+        // Exit: close long → marker above the exit bar; close short → below
+        position = isSell ? 'belowBar' : 'aboveBar';
+      } else if (isSell) {
+        shape = 'arrowDown';
+        position = 'aboveBar';
+      } else {
+        shape = 'arrowUp';
+        position = 'belowBar';
+      }
+
+      const entry = { id, time: snappedTime, price, text: text ?? '', color: color || '#2962FF', shape, position };
+      tradeMarkerListRef.current = [...tradeMarkerListRef.current, entry];
+
+      // Build the marker list sorted by time (required by lightweight-charts)
+      const sorted = [...tradeMarkerListRef.current].sort((a, b) => a.time - b.time);
+      tradeMarkersPrimitiveRef.current.setMarkers(
+        sorted.map(m => ({
+          time: m.time,
+          position: m.position,
+          shape: m.shape,
+          color: m.color,
+          text: m.text,
+          size: 1,
+        }))
+      );
+
+      return id;
+    } catch (e) {
+      console.warn('Failed to add marker:', e);
+      return null;
     }
-  } else if (id.startsWith('tl_') || type === 'line') {
-    if (window._tradeLines && window._tradeLines[id]) {
-      const { series, chart } = window._tradeLines[id];
-      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-      delete window._tradeLines[id];
+  },
+
+  addHorizontalLine: (price, color, label) => {
+    if (!chartRef.current) return null;
+    try {
+      // lightweight-charts v5: use addSeries(SeriesDefinition, options)
+      const series = chartRef.current.addSeries(LineSeries, {
+        color: color || '#2962FF',
+        lineWidth: 1,
+        lineStyle: 2, // dashed
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: label || '',
+        crosshairMarkerVisible: false,
+      });
+      const data = dataRef.current;
+      const startTime = data && data.length > 0 ? data[0].time : Math.floor(Date.now() / 1000) - 86400;
+      // Extend far into the future so line stays visible during replay
+      const endTime = startTime + 60 * 60 * 24 * 365 * 10;
+      series.setData([
+        { time: startTime, value: price },
+        { time: endTime, value: price },
+      ]);
+      if (!window._tradeLines) window._tradeLines = {};
+      const id = 'tl_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+      window._tradeLines[id] = { series, chart: chartRef.current };
+      return id;
+    } catch (e) {
+      console.warn('Failed to add horizontal line:', e);
+      return null;
     }
-  } else {
-    // Try both
-    if (window._tradeMarkers && window._tradeMarkers[id]) {
-      const { series, chart } = window._tradeMarkers[id];
-      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-      delete window._tradeMarkers[id];
+  },
+
+  removeObject: (id, type) => {
+    if (!id) return;
+    if (id.startsWith('tm_') || type === 'marker') {
+      // Remove from the in-memory marker list and refresh the primitive
+      tradeMarkerListRef.current = tradeMarkerListRef.current.filter(m => m.id !== id);
+      if (tradeMarkersPrimitiveRef.current) {
+        const sorted = [...tradeMarkerListRef.current].sort((a, b) => a.time - b.time);
+        try {
+          tradeMarkersPrimitiveRef.current.setMarkers(
+            sorted.map(m => ({
+              time: m.time,
+              position: m.position,
+              shape: m.shape,
+              color: m.color,
+              text: m.text,
+              size: 1,
+            }))
+          );
+        } catch (e) { /* ignore */ }
+      }
     }
-    if (window._tradeLines && window._tradeLines[id]) {
-      const { series, chart } = window._tradeLines[id];
-      try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-      delete window._tradeLines[id];
+    if (id.startsWith('tl_') || type === 'line') {
+      if (window._tradeLines && window._tradeLines[id]) {
+        const { series, chart } = window._tradeLines[id];
+        try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+        delete window._tradeLines[id];
+      }
     }
-  }
-},
+    // Fallback: try both if no prefix match
+    if (!id.startsWith('tm_') && !id.startsWith('tl_') && type === undefined) {
+      if (window._tradeLines && window._tradeLines[id]) {
+        const { series, chart } = window._tradeLines[id];
+        try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+        delete window._tradeLines[id];
+      }
+    }
+  },
     // --- END NEW METHODS ---
     toggleTimer: () => {
         if (priceScaleTimerRef.current) {
@@ -396,7 +469,133 @@ removeObject: (id, type) => {
             }
             return newMode;
         });
-    }
+    },
+    /**
+     * Sync this chart to a given master Unix timestamp (seconds).
+     * Called every ~100 ms by the App replay-sync loop from the master (active) chart.
+     *
+     * For charts on a LOWER timeframe than the master: straightforward slice.
+     * For charts on a HIGHER timeframe: we must reconstruct the currently-forming
+     * HTF bar dynamically from the LTF bars that fall within it, so the candle's
+     * high/low/close updates tick-by-tick exactly as it would in live trading.
+     *
+     * Algorithm:
+     *  1. Take all HTF historical bars whose open_time < current HTF bar open_time
+     *     → these are complete, display as-is.
+     *  2. Identify the current HTF bar: the last historical bar whose open_time
+     *     <= masterTimestamp (but may not yet be "closed" relative to the master clock).
+     *  3. Aggregate all LTF bars within [htfBarOpenTime, masterTimestamp] into a
+     *     single OHLC candle and append it instead of the stored historical bar.
+     *     This gives a live-updating candle identical to what a live feed would produce.
+     *  4. When the master clock moves past the HTF bar's close time, the next HTF bar
+     *     starts and we commit the previous dynamic bar via the historical snapshot
+     *     (which avoids drift from accumulated floating-point rounding).
+     */
+    syncToTimestamp: (masterTimestamp, ltfBarsAtMaster) => {
+        if (!mainSeriesRef.current) return;
+
+        // ── 1. Initialise follower snapshot once ──────────────────────────────
+        if (!followerFullDataRef.current || followerFullDataRef.current.length === 0) {
+            followerFullDataRef.current = dataRef.current ? [...dataRef.current] : [];
+        }
+        const full = followerFullDataRef.current; // HTF historical bars
+        if (full.length === 0) return;
+
+        // Derive this chart's timeframe in seconds from the interval prop
+        const myIntervalSec = intervalToSeconds(interval);
+
+        // ── 2. Find which HTF bar is "current" (open_time <= masterTimestamp) ─
+        let lo = 0, hi = full.length - 1, htfBarIdx = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (full[mid].time <= masterTimestamp) { htfBarIdx = mid; lo = mid + 1; }
+            else { hi = mid - 1; }
+        }
+
+        if (htfBarIdx < 0) {
+            // Master clock is before even the first bar — show nothing
+            if (transformDataRef.current) mainSeriesRef.current.setData([]);
+            if (updateIndicatorsRef.current) updateIndicatorsRef.current([]);
+            return;
+        }
+
+        const currentHTFBar = full[htfBarIdx];
+        const htfBarCloseTime = currentHTFBar.time + myIntervalSec; // exclusive close
+
+        // ── 3. Build the live (dynamic) current HTF candle ───────────────────
+        // Use the LTF bars that the master chart has played through so far.
+        // `ltfBarsAtMaster` is an array of raw OHLC candles from the master
+        // (active) chart — passed in by the App sync loop.
+        let liveBar = null;
+        if (ltfBarsAtMaster && ltfBarsAtMaster.length > 0) {
+            // Filter LTF bars that fall within the current HTF bar's open range
+            const barsInHTF = ltfBarsAtMaster.filter(
+                b => b.time >= currentHTFBar.time && b.time < htfBarCloseTime
+            );
+            if (barsInHTF.length > 0) {
+                liveBar = {
+                    time: currentHTFBar.time, // HTF bar opens at this time
+                    open: barsInHTF[0].open,
+                    high: Math.max(...barsInHTF.map(b => b.high)),
+                    low: Math.min(...barsInHTF.map(b => b.low)),
+                    close: barsInHTF[barsInHTF.length - 1].close,
+                };
+            }
+        }
+
+        // Fall back to the stored historical bar if we have no LTF data to build from
+        if (!liveBar) {
+            liveBar = { ...currentHTFBar };
+        }
+
+        // ── 4. Compose the final dataset: past HTF bars + live current bar ───
+        const pastBars = full.slice(0, htfBarIdx); // completed bars before current
+        const displayData = [...pastBars, liveBar];
+
+        if (transformDataRef.current) {
+            mainSeriesRef.current.setData(transformDataRef.current(displayData, chartTypeRef.current));
+        }
+        if (updateIndicatorsRef.current) {
+            updateIndicatorsRef.current(displayData);
+        }
+    },
+    /**
+     * Exit follower replay mode and restore full data.
+     */
+    exitFollowerReplay: () => {
+        const full = followerFullDataRef.current;
+        if (mainSeriesRef.current && full && full.length > 0) {
+            dataRef.current = [...full];
+            if (transformDataRef.current) {
+                mainSeriesRef.current.setData(transformDataRef.current(full, chartTypeRef.current));
+            }
+            if (updateIndicatorsRef.current) {
+                updateIndicatorsRef.current(full);
+            }
+        }
+        followerFullDataRef.current = [];
+    },
+    /** Expose current replay timestamp (seconds) so App can broadcast it */
+    getReplayTimestamp: () => {
+        if (replayIndexRef.current !== null && fullDataRef.current && fullDataRef.current.length > 0) {
+            const idx = Math.min(replayIndexRef.current, fullDataRef.current.length - 1);
+            return fullDataRef.current[idx]?.time ?? null;
+        }
+        return null;
+    },
+    /**
+     * Return all raw OHLC bars from this chart's replay dataset up to and
+     * including the current replay index. Used by follower charts to build
+     * their live HTF candle dynamically.
+     */
+    getReplayBars: () => {
+        if (replayIndexRef.current === null || !fullDataRef.current || fullDataRef.current.length === 0) {
+            return [];
+        }
+        const idx = Math.min(replayIndexRef.current, fullDataRef.current.length - 1);
+        return fullDataRef.current.slice(0, idx + 1);
+    },
+    getIsReplayMode: () => isReplayModeRef.current,
 }));
 
     // Helper function for zooming the chart
@@ -1092,6 +1291,22 @@ removeObject: (id, type) => {
         mainSeriesRef.current = replacementSeries;
         initializeLineTools(replacementSeries);
 
+        // Re-attach trade markers primitive to the new series (preserving all markers)
+        if (tradeMarkerListRef.current.length > 0) {
+            try {
+                const sorted = [...tradeMarkerListRef.current].sort((a, b) => a.time - b.time);
+                tradeMarkersPrimitiveRef.current = createSeriesMarkers(
+                    replacementSeries,
+                    sorted.map(m => ({ time: m.time, position: m.position, shape: m.shape, color: m.color, text: m.text, size: 1 }))
+                );
+            } catch (e) {
+                console.warn('Failed to re-attach trade markers:', e);
+                tradeMarkersPrimitiveRef.current = null;
+            }
+        } else {
+            tradeMarkersPrimitiveRef.current = null; // will be lazily recreated on next addMarker
+        }
+
         // Re-attach timer to the new series when chart type changes
         if (priceScaleTimerRef.current) {
             try {
@@ -1762,6 +1977,14 @@ removeObject: (id, type) => {
     useEffect(() => {
         updateReplayDataRef.current = updateReplayData;
     }, [updateReplayData]);
+
+    // Store transformData and updateIndicators in refs for use in imperative methods
+    useEffect(() => {
+        transformDataRef.current = transformData;
+    }); // no dep array — always up to date
+    useEffect(() => {
+        updateIndicatorsRef.current = (data, cfg) => updateIndicators(data, cfg ?? indicators);
+    }); // no dep array — always up to date
 
     const handleReplayPlayPause = () => {
         setIsPlaying(prev => !prev);
