@@ -77,6 +77,8 @@ export const useTradingStore = create<TradingState>((set, get) => ({
         : (positionData.entryPrice ?? 0),
       status: isLimit ? 'pending' : 'open',
       entryTime: positionData.entryTime ?? Math.floor(Date.now() / 1000),
+      // For market orders, filledTime equals entryTime (fill is immediate at current candle)
+      filledTime: isLimit ? undefined : (positionData.entryTime ?? Math.floor(Date.now() / 1000)),
     };
 
     if (isLimit) {

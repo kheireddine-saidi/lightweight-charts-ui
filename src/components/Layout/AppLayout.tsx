@@ -3,15 +3,21 @@ import React from 'react';
 import styled from 'styled-components';
 import TradingPanel from '../TradingPanel/TradingPanel';
 import PositionsPanel from '../PositionsPanel/PositionsPanel';
+import Watchlist from '../Watchlist/Watchlist';
+import AlertsPanel from '../Alerts/AlertsPanel';
+import RightToolbar from '../Toolbar/RightToolbar';
 
-const Layout = styled.div`
+/* ─── Layout grid ─── */
+// Right column = toolbar (52px) + optional panel (280px when visible)
+const Layout = styled.div<{ $showPanel: boolean }>`
   display: grid;
-  grid-template-columns: 1fr 280px;
+  grid-template-columns: 1fr 52px ${(p) => (p.$showPanel ? '280px' : '0px')};
   grid-template-rows: 1fr 240px;
   height: 100vh;
   width: 100vw;
   background: #131722;
   color: #d1d4dc;
+  transition: grid-template-columns 0.18s ease;
 `;
 
 const ChartArea = styled.div`
@@ -53,19 +59,32 @@ const LeftToolbarWrapper = styled.div`
   z-index: 10;
 `;
 
-const TradingPanelArea = styled.div`
-  grid-row: 1 / 2;
+/* Right toolbar column — spans both rows */
+const RightToolbarArea = styled.div`
+  grid-row: 1 / 3;
   grid-column: 2 / 3;
   background: #1e222d;
   border-left: 1px solid #2a2e39;
+  overflow: hidden;
+`;
+
+/* Right side panel — spans both rows, hidden when no panel is active */
+const RightPanelArea = styled.div<{ $visible: boolean }>`
+  grid-row: 1 / 3;
+  grid-column: 3 / 4;
+  background: #1e222d;
+  border-left: 1px solid #2a2e39;
   overflow-y: auto;
+  overflow-x: hidden;
+  display: ${(p) => (p.$visible ? 'flex' : 'none')};
+  flex-direction: column;
   &::-webkit-scrollbar { width: 4px; }
   &::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 2px; }
 `;
 
 const PositionsArea = styled.div`
   grid-row: 2 / 3;
-  grid-column: 1 / 3;
+  grid-column: 1 / 2;
   background: #1e222d;
   border-top: 1px solid #2a2e39;
   overflow: hidden;
@@ -78,11 +97,50 @@ interface AppLayoutProps {
   topbar?: React.ReactNode;
   leftToolbar?: React.ReactNode;
   currentTime?: number;
+  // Right panel management
+  activeRightPanel?: string | null;
+  onRightPanelChange?: (panel: string | null) => void;
+  rightPanelBadges?: Record<string, number>;
+  // Watchlist props (passed through)
+  watchlistItems?: any[];
+  watchlistCurrentSymbol?: string;
+  onWatchlistSymbolSelect?: (symbol: string) => void;
+  onWatchlistAddClick?: () => void;
+  onWatchlistRemoveClick?: (symbol: string) => void;
+  onWatchlistReorder?: (symbols: string[]) => void;
+  // Alerts props
+  alerts?: any[];
+  alertLogs?: any[];
+  onRemoveAlert?: (id: string) => void;
+  onRestartAlert?: (price: number, condition: string) => void;
+  onPauseAlert?: (id: string) => void;
 }
 
-export const AppLayout: React.FC<AppLayoutProps> = ({ chart, topbar, leftToolbar, currentTime }) => {
+export const AppLayout: React.FC<AppLayoutProps> = ({
+  chart,
+  topbar,
+  leftToolbar,
+  currentTime,
+  activeRightPanel,
+  onRightPanelChange,
+  rightPanelBadges = {},
+  watchlistItems = [],
+  watchlistCurrentSymbol,
+  onWatchlistSymbolSelect,
+  onWatchlistAddClick,
+  onWatchlistRemoveClick,
+  onWatchlistReorder,
+  alerts = [],
+  alertLogs = [],
+  onRemoveAlert,
+  onRestartAlert,
+  onPauseAlert,
+}) => {
+  const showPanel = !!activeRightPanel;
+
   return (
-    <Layout>
+    <Layout $showPanel={showPanel}>
+      {/* Main chart area */}
       <ChartArea>
         {chart}
         <ChartOverlay>
@@ -90,9 +148,43 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ chart, topbar, leftToolbar
           {leftToolbar && <LeftToolbarWrapper>{leftToolbar}</LeftToolbarWrapper>}
         </ChartOverlay>
       </ChartArea>
-      <TradingPanelArea>
-        <TradingPanel currentTime={currentTime} />
-      </TradingPanelArea>
+
+      {/* Right toolbar (icon buttons) */}
+      <RightToolbarArea>
+        <RightToolbar
+          activePanel={activeRightPanel}
+          onPanelChange={onRightPanelChange || (() => {})}
+          badges={rightPanelBadges}
+        />
+      </RightToolbarArea>
+
+      {/* Right side panel — swaps content based on activeRightPanel */}
+      <RightPanelArea $visible={showPanel}>
+        {activeRightPanel === 'watchlist' && (
+          <Watchlist
+            currentSymbol={watchlistCurrentSymbol}
+            items={watchlistItems}
+            onSymbolSelect={onWatchlistSymbolSelect}
+            onAddClick={onWatchlistAddClick}
+            onRemoveClick={onWatchlistRemoveClick}
+            onReorder={onWatchlistReorder}
+          />
+        )}
+        {activeRightPanel === 'trading' && (
+          <TradingPanel currentTime={currentTime} />
+        )}
+        {activeRightPanel === 'alerts' && (
+          <AlertsPanel
+            alerts={alerts}
+            logs={alertLogs}
+            onRemoveAlert={onRemoveAlert}
+            onRestartAlert={onRestartAlert}
+            onPauseAlert={onPauseAlert}
+          />
+        )}
+      </RightPanelArea>
+
+      {/* Bottom positions panel */}
       <PositionsArea>
         <PositionsPanel />
       </PositionsArea>

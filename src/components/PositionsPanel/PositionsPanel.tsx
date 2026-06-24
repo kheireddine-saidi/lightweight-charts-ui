@@ -91,7 +91,7 @@ const EmptyState = styled.div`
 const Table = styled.table`
   width: 100%;
   border-collapse: collapse;
-  min-width: 600px;
+  min-width: 700px;
 `;
 
 const TH = styled.th`
@@ -190,6 +190,28 @@ const SumVal = styled.span<{ $color?: string }>`
   font-variant-numeric: tabular-nums;
 `;
 
+/* ─── Helpers ─── */
+const formatDateTime = (ts: number | undefined) => {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return (
+    d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }) +
+    ' ' +
+    d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  );
+};
+
+/* Compute live PnL from current price (used for display; store also updates) */
+const livePnL = (pos: any, currentPrice: number) => {
+  if (pos.status === 'pending') return null;
+  const pnl =
+    pos.side === 'long'
+      ? (currentPrice - pos.entryPrice) * pos.positionSize * pos.leverage
+      : (pos.entryPrice - currentPrice) * pos.positionSize * pos.leverage;
+  const pnlPct = (pnl / (pos.entryPrice * pos.positionSize)) * 100;
+  return { pnl, pnlPct };
+};
+
 /* ─── Tabs ─── */
 const OpenTab = () => {
   const positions = useTradingStore((s) => s.positions);
@@ -198,7 +220,6 @@ const OpenTab = () => {
   const cancelPendingOrder = useTradingStore((s) => s.cancelPendingOrder);
   const currentPrice = useMarketStore((s) => s.currentPrice);
 
-  const totalPnL = positions.reduce((s, p) => s + p.pnl, 0);
   const allItems = [...positions, ...pendingOrders];
 
   if (allItems.length === 0) {
@@ -206,6 +227,12 @@ const OpenTab = () => {
   }
 
   const fmt = (n: number, dec = 5) => n.toFixed(dec);
+
+  // Compute live total PnL from current price
+  const totalPnL = positions.reduce((s, p) => {
+    const live = livePnL(p, currentPrice);
+    return s + (live ? live.pnl : 0);
+  }, 0);
 
   return (
     <>
@@ -221,36 +248,45 @@ const OpenTab = () => {
               <TH>Current</TH>
               <TH>PnL</TH>
               <TH>SL / TP</TH>
+              <TH>Filled At</TH>
               <TH>Action</TH>
             </tr>
           </thead>
           <tbody>
-            {positions.map((pos) => (
-              <TR key={pos.id}>
-                <TD><SidePill $side={pos.side}>{pos.side.toUpperCase()}</SidePill></TD>
-                <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
-                <TD>{pos.positionSize}</TD>
-                <TD>{pos.leverage}×</TD>
-                <TD>{fmt(pos.entryPrice)}</TD>
-                <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
-                <TD>
-                  <PnLCell $val={pos.pnl}>
-                    {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
-                    <span style={{ color: C.textDim, fontWeight: 400, fontSize: 10, marginLeft: 3 }}>
-                      ({pos.pnlPercent >= 0 ? '+' : ''}{pos.pnlPercent.toFixed(2)}%)
-                    </span>
-                  </PnLCell>
-                </TD>
-                <TD style={{ color: C.textMuted }}>
-                  {pos.stopLoss ? <span style={{ color: C.red }}>{fmt(pos.stopLoss)}</span> : '—'}
-                  {' / '}
-                  {pos.takeProfit ? <span style={{ color: C.green }}>{fmt(pos.takeProfit)}</span> : '—'}
-                </TD>
-                <TD>
-                  <ActionBtn onClick={() => closePosition(pos.id, currentPrice)}>Close</ActionBtn>
-                </TD>
-              </TR>
-            ))}
+            {positions.map((pos) => {
+              const live = livePnL(pos, currentPrice);
+              const pnl = live ? live.pnl : pos.pnl;
+              const pnlPct = live ? live.pnlPct : pos.pnlPercent;
+              return (
+                <TR key={pos.id}>
+                  <TD><SidePill $side={pos.side}>{pos.side.toUpperCase()}</SidePill></TD>
+                  <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
+                  <TD>{pos.positionSize}</TD>
+                  <TD>{pos.leverage}×</TD>
+                  <TD>{fmt(pos.entryPrice)}</TD>
+                  <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
+                  <TD>
+                    <PnLCell $val={pnl}>
+                      {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+                      <span style={{ color: C.textDim, fontWeight: 400, fontSize: 10, marginLeft: 3 }}>
+                        ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
+                      </span>
+                    </PnLCell>
+                  </TD>
+                  <TD style={{ color: C.textMuted }}>
+                    {pos.stopLoss ? <span style={{ color: C.red }}>{fmt(pos.stopLoss)}</span> : '—'}
+                    {' / '}
+                    {pos.takeProfit ? <span style={{ color: C.green }}>{fmt(pos.takeProfit)}</span> : '—'}
+                  </TD>
+                  <TD style={{ color: C.textMuted, fontSize: 11 }}>
+                    {formatDateTime(pos.filledTime ?? pos.entryTime)}
+                  </TD>
+                  <TD>
+                    <ActionBtn onClick={() => closePosition(pos.id, currentPrice)}>Close</ActionBtn>
+                  </TD>
+                </TR>
+              );
+            })}
             {pendingOrders.map((order) => (
               <TR key={order.id}>
                 <TD>
@@ -266,6 +302,9 @@ const OpenTab = () => {
                   {order.stopLoss ? <span style={{ color: C.red }}>{fmt(order.stopLoss)}</span> : '—'}
                   {' / '}
                   {order.takeProfit ? <span style={{ color: C.green }}>{fmt(order.takeProfit)}</span> : '—'}
+                </TD>
+                <TD style={{ color: C.textMuted, fontSize: 11 }}>
+                  Pending — {formatDateTime(order.entryTime)}
                 </TD>
                 <TD>
                   <ActionBtn onClick={() => cancelPendingOrder(order.id)}>Cancel</ActionBtn>
@@ -311,12 +350,6 @@ const HistoryTab = () => {
   const winRate = closedPositions.length > 0 ? (wins / closedPositions.length) * 100 : 0;
   const fmt = (n: number, dec = 5) => n.toFixed(dec);
 
-  const formatTime = (ts: number) => {
-    const d = new Date(ts * 1000);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-      + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  };
-
   return (
     <>
       <ScrollArea>
@@ -330,6 +363,7 @@ const HistoryTab = () => {
               <TH>Exit</TH>
               <TH>PnL</TH>
               <TH>% Return</TH>
+              <TH>Filled At</TH>
               <TH>Closed At</TH>
             </tr>
           </thead>
@@ -352,7 +386,10 @@ const HistoryTab = () => {
                   </PnLCell>
                 </TD>
                 <TD style={{ color: C.textMuted, fontSize: 11 }}>
-                  {pos.closeTime ? formatTime(pos.closeTime) : '—'}
+                  {formatDateTime(pos.filledTime ?? pos.entryTime)}
+                </TD>
+                <TD style={{ color: C.textMuted, fontSize: 11 }}>
+                  {formatDateTime(pos.closeTime)}
                 </TD>
               </TR>
             ))}

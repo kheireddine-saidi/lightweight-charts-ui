@@ -562,6 +562,12 @@ function App() {
     setWatchlistSymbols(prev => prev.filter(s => s !== symbol));
   };
 
+  const handleWatchlistSymbolSelect = (symbol) => {
+    setCharts(prev => prev.map(chart =>
+      chart.id === activeChartId ? { ...chart, symbol } : chart
+    ));
+  };
+
   const handleAddClick = () => {
     setSearchMode('add');
     setIsSearchOpen(true);
@@ -1046,7 +1052,7 @@ useEffect(() => {
   return () => clearInterval(interval);
 }, [activeChartId, chartRefs]);
 
-useTradeMarkers(chartRefs, activeChartId);
+useTradeMarkers(chartRefs, activeChartId, charts);
 
 // ── Replay synchronisation ──────────────────────────────────────────────────
 // When the active chart is in replay mode, poll its current replay timestamp
@@ -1100,6 +1106,21 @@ const getCurrentTime = useCallback(() => {
   return (
     <>
       <AppLayout
+        currentTime={getCurrentTime()}
+        activeRightPanel={activeRightPanel}
+        onRightPanelChange={handleRightPanelToggle}
+        rightPanelBadges={{ alerts: unreadAlertCount }}
+        watchlistItems={watchlistData}
+        watchlistCurrentSymbol={currentSymbol}
+        onWatchlistSymbolSelect={handleWatchlistSymbolSelect}
+        onWatchlistAddClick={() => { setSearchMode('switch'); setIsSearchOpen(true); }}
+        onWatchlistRemoveClick={handleRemoveFromWatchlist}
+        onWatchlistReorder={handleWatchlistReorder}
+        alerts={alerts}
+        alertLogs={alertLogs}
+        onRemoveAlert={handleRemoveAlert}
+        onRestartAlert={handleRestartAlert}
+        onPauseAlert={handlePauseAlert}
         chart={
           <ChartGrid
             currentTime={getCurrentTime()}
