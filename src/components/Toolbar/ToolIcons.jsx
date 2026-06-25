@@ -366,3 +366,17 @@ export const TimerIcon = ({ size = 28, ...props }) => (
     </svg>
 );
 TimerIcon.propTypes = IconPropTypes;
+
+export const TradeSetupIcon = ({ size = 28, ...props }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 28 28" fill="currentColor" {...props}>
+        {/* Green TP box (top) */}
+        <rect x="4" y="4" width="14" height="7" fill="#089981" fillOpacity="0.35" stroke="#089981" strokeWidth="1.2"/>
+        {/* Red SL box (bottom) */}
+        <rect x="4" y="17" width="14" height="7" fill="#f23645" fillOpacity="0.35" stroke="#f23645" strokeWidth="1.2"/>
+        {/* Entry line */}
+        <line x1="4" y1="17" x2="18" y2="17" stroke="#d1d4dc" strokeWidth="1.5"/>
+        {/* R label */}
+        <text x="21" y="12" fontSize="7" fontWeight="700" fill="#089981" fontFamily="sans-serif">2R</text>
+        <text x="21" y="22" fontSize="7" fontWeight="700" fill="#f23645" fontFamily="sans-serif">1R</text>
+    </svg>
+);

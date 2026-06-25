@@ -18,6 +18,7 @@ import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-
 import '../../plugins/line-tools/line-tools.css';
 import ReplayControls from '../Replay/ReplayControls';
 import ReplaySlider from '../Replay/ReplaySlider';
+import TradeSetupTool from './TradeSetupTool';
 
 const TOOL_MAP = {
     'cursor': 'None',
@@ -55,6 +56,7 @@ const TOOL_MAP = {
     'price_range': 'PriceRange',
     'date_price_range': 'DatePriceRange',
     'measure': 'Measure',
+    'trade_setup': 'None', // handled by TradeSetupTool overlay, not LineToolManager
     'zoom_in': 'None', // Zoom handled separately via click handler
     'zoom_out': 'None', // Zoom handled separately via click handler
     'remove': 'None'
@@ -107,6 +109,9 @@ const ChartComponent = forwardRef(({
     // Trade marker primitive (createSeriesMarkers) attached to main series
     const tradeMarkersPrimitiveRef = useRef(null); // the SeriesMarkers wrapper
     const tradeMarkerListRef = useRef([]);          // [{id, time, price, text, color, position, shape}]
+
+    // Trade setup tool — committed zones (persist after order is placed)
+    const [committedTradeZones, setCommittedTradeZones] = useState([]);
 
     // Replay State
     const [isReplayMode, setIsReplayMode] = useState(false);
@@ -416,6 +421,23 @@ useImperativeHandle(ref, () => ({
     }
   },
     // --- END NEW METHODS ---
+    // ── Trade Setup zone management ──────────────────────────────────────
+    updateTradeZone: (zoneId, fields, positionId, newStatus) => {
+      setCommittedTradeZones(prev =>
+        prev.map(z => {
+          // Match by zone id
+          if (zoneId && z.id === zoneId) return { ...z, ...(fields ?? {}) };
+          // Match by linked position id (for fill/close sync from polling)
+          if (positionId && z.positionId === positionId && newStatus) {
+            return { ...z, status: newStatus };
+          }
+          return z;
+        })
+      );
+    },
+    removeTradeZone: (zoneId) => {
+      setCommittedTradeZones(prev => prev.filter(z => z.id !== zoneId));
+    },
     toggleTimer: () => {
         if (priceScaleTimerRef.current) {
             const isVisible = priceScaleTimerRef.current.isVisible();
@@ -631,6 +653,13 @@ useImperativeHandle(ref, () => ({
         if (lineToolManagerRef.current && activeTool) {
             // Handle special action tools that don't use startTool
             const manager = lineToolManagerRef.current;
+
+            // Trade setup tool — handled entirely by TradeSetupTool overlay
+            if (activeTool === 'trade_setup') {
+                // Ensure LineToolManager is in passthrough mode (no active tool)
+                if (typeof manager.startTool === 'function') manager.startTool('None');
+                return;
+            }
 
             // Lock All Drawings - SET state based on App's state
             if (activeTool === 'lock_all') {
@@ -2490,6 +2519,23 @@ useEffect(() => {
                 />
             )}
 
+            {/* Trade Setup Tool overlay */}
+            <TradeSetupTool
+                containerRef={chartContainerRef}
+                chartApi={chartRef.current}
+                seriesApi={mainSeriesRef.current}
+                active={activeTool === 'trade_setup'}
+                dataRef={fullDataRef}
+                zones={committedTradeZones}
+                onZonesChange={setCommittedTradeZones}
+                onDone={() => {
+                    // Switch back to cursor after second click
+                    if (onToolUsed) onToolUsed();
+                }}
+                onCancel={() => {
+                    if (onToolUsed) onToolUsed();
+                }}
+            />
 
         </div>
     );

@@ -39,6 +39,8 @@ interface TradingState {
   openPosition: (data: Partial<Position>) => string;
   cancelPendingOrder: (id: string) => void;
   closePosition: (id: string, closePrice: number, closeTime?: number) => void;
+  updatePendingOrder: (id: string, fields: Partial<Position>) => void;
+  updatePosition: (id: string, fields: Partial<Position>) => void;
   updatePnLAndCheckSLTP: (
     currentPrice: number,
     currentTime: number,
@@ -92,6 +94,22 @@ export const useTradingStore = create<TradingState>((set, get) => ({
   cancelPendingOrder: (id) => {
     set((state) => ({
       pendingOrders: state.pendingOrders.filter((o) => o.id !== id),
+    }));
+  },
+
+  updatePendingOrder: (id, fields) => {
+    set((state) => ({
+      pendingOrders: state.pendingOrders.map((o) =>
+        o.id === id ? { ...o, ...fields, entryPrice: fields.limitPrice ?? fields.entryPrice ?? o.entryPrice } : o
+      ),
+    }));
+  },
+
+  updatePosition: (id, fields) => {
+    set((state) => ({
+      positions: state.positions.map((p) =>
+        p.id === id ? { ...p, ...fields } : p
+      ),
     }));
   },
 

@@ -1,8 +1,9 @@
 // components/TradingPanel/TradingPanel.jsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import styled from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
+import { useTradeSetupStore } from '../../stores/tradeSetupStore';
 
 /* ─── Design tokens ─────────────────────────────── */
 const C = {
@@ -280,7 +281,18 @@ const SectionTitle = styled.div`
   margin-bottom: 10px;
 `;
 
-/* ─── Component ─────────────────────────────────── */
+const SetupBanner = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(41, 98, 255, 0.10);
+  border-left: 3px solid ${C.blue};
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: ${C.blue};
+  margin-bottom: 2px;
+`;
 const TradingPanel = ({ currentTime }) => {
   const [side, setSide] = useState('long');
   const [orderType, setOrderType] = useState('market');
@@ -294,6 +306,33 @@ const TradingPanel = ({ currentTime }) => {
 
   const { openPosition, balance, equity } = useTradingStore();
   const currentPrice = useMarketStore((s) => s.currentPrice);
+
+  const [fromSetup, setFromSetup] = useState(false);
+  const [pendingZoneId, setPendingZoneId] = useState(null); // chart zone linked to this order
+
+  // ── Trade Setup Tool integration ──────────────────────────────────────
+  const tradeSetup = useTradeSetupStore((s) => s);
+
+  useEffect(() => {
+    if (!tradeSetup.isReady) return;
+
+    setOrderType('limit');
+    if (tradeSetup.entryPrice != null)
+      setLimitPrice(String(tradeSetup.entryPrice));
+    if (tradeSetup.side != null)
+      setSide(tradeSetup.side);
+    if (tradeSetup.stopLoss != null) {
+      setShowSL(true);
+      setStopLoss(String(tradeSetup.stopLoss));
+    }
+    if (tradeSetup.takeProfit != null) {
+      setShowTP(true);
+      setTakeProfit(String(tradeSetup.takeProfit));
+    }
+    setPendingZoneId(tradeSetup.zoneId ?? null);
+    setFromSetup(true);
+    useTradeSetupStore.getState().clearSetup();
+  }, [tradeSetup.isReady]);
 
   const entryPrice = orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : currentPrice;
 
@@ -320,7 +359,7 @@ const TradingPanel = ({ currentTime }) => {
     const parsedSize = parseFloat(size);
     if (!parsedSize || parsedSize <= 0) return;
 
-    openPosition({
+    const positionId = openPosition({
       side,
       type: orderType,
       entryPrice: currentPrice,
@@ -332,13 +371,22 @@ const TradingPanel = ({ currentTime }) => {
       entryTime: currentTime ?? Math.floor(Date.now() / 1000),
     });
 
+    // Link the chart zone to this position so drag updates propagate
+    if (pendingZoneId && positionId) {
+      useTradeSetupStore.getState().setSetup({
+        zoneLink: { zoneId: pendingZoneId, positionId, status: orderType === 'limit' ? 'pending' : 'open' },
+      });
+    }
+
     // Reset optional fields
     setStopLoss('');
     setTakeProfit('');
     setShowSL(false);
     setShowTP(false);
+    setFromSetup(false);
+    setPendingZoneId(null);
     if (orderType === 'limit') setLimitPrice('');
-  }, [side, orderType, size, limitPrice, leverage, showSL, stopLoss, showTP, takeProfit, currentTime, currentPrice, openPosition]);
+  }, [side, orderType, size, limitPrice, leverage, showSL, stopLoss, showTP, takeProfit, currentTime, currentPrice, openPosition, pendingZoneId]);
 
   const pnlColor = equity >= balance ? C.green : C.red;
 
@@ -362,6 +410,13 @@ const TradingPanel = ({ currentTime }) => {
       <Section>
         <PriceDisplay>{currentPrice.toFixed(currentPrice < 10 ? 5 : 2)}</PriceDisplay>
       </Section>
+
+      {/* Trade Setup pre-fill banner */}
+      {fromSetup && (
+        <SetupBanner>
+          📐 Pre-filled from chart setup — review & place order
+        </SetupBanner>
+      )}
 
       {/* Direction + Order type */}
       <Section>

@@ -18,6 +18,7 @@ import { AppLayout } from './components/Layout/AppLayout';
 
 import { useMarketStore } from './stores/marketStore';
 import { useTradingStore } from './stores/tradingStore';
+import { useTradeSetupStore } from './stores/tradeSetupStore';
 import { useTradeMarkers } from './hooks/useTradeMarkers';
 
 
@@ -1039,13 +1040,34 @@ useEffect(() => {
       const time = activeRef.getCurrentTime?.() || Math.floor(Date.now() / 1000);
       if (price !== null && price !== undefined && !isNaN(price)) {
         useMarketStore.getState().setCurrentPrice(price);
-        // Get candle OHLC for accurate SL/TP detection
         const ohlc = typeof activeRef.getCurrentOHLC === 'function'
           ? activeRef.getCurrentOHLC()
           : null;
         const high = ohlc?.high ?? price;
         const low = ohlc?.low ?? price;
-        useTradingStore.getState().updatePnLAndCheckSLTP(price, time, high, low);
+        const { filled, closed } = useTradingStore.getState().updatePnLAndCheckSLTP(price, time, high, low);
+
+        // Sync zone status when pending orders fill
+        if (filled && filled.length > 0) {
+          filled.forEach(pos => {
+            Object.values(chartRefs.current).forEach(ref => {
+              if (ref && typeof ref.updateTradeZone === 'function') {
+                // Find zone linked to this position
+                ref.updateTradeZone(null, null, pos.id, 'open'); // uses positionId lookup
+              }
+            });
+          });
+        }
+        // Sync zone status when positions close (SL/TP hit)
+        if (closed && closed.length > 0) {
+          closed.forEach(({ pos }) => {
+            Object.values(chartRefs.current).forEach(ref => {
+              if (ref && typeof ref.updateTradeZone === 'function') {
+                ref.updateTradeZone(null, null, pos.id, 'closed');
+              }
+            });
+          });
+        }
       }
     }
   }, 100);
@@ -1053,6 +1075,30 @@ useEffect(() => {
 }, [activeChartId, chartRefs]);
 
 useTradeMarkers(chartRefs, activeChartId, charts);
+
+// Listen to tradeSetupStore for cross-component events
+React.useEffect(() => {
+  return useTradeSetupStore.subscribe((state) => {
+    // Auto-switch right panel to Trading when a trade setup is drawn
+    if (state.requestTradingPanel) {
+      setActiveRightPanel('trading');
+      useTradeSetupStore.getState().setSetup({ requestTradingPanel: false });
+    }
+    // Link a zone to the newly placed order so drag updates the order
+    if (state.zoneLink) {
+      const { zoneId, positionId, status } = state.zoneLink;
+      // Update zones in all chart components that carry this zone
+      // We do it by pushing through chartRefs: each ChartComponent exposes
+      // updateTradeZone(zoneId, fields) via its imperative handle
+      Object.values(chartRefs.current).forEach(ref => {
+        if (ref && typeof ref.updateTradeZone === 'function') {
+          ref.updateTradeZone(zoneId, { positionId, status });
+        }
+      });
+      useTradeSetupStore.getState().setSetup({ zoneLink: null });
+    }
+  });
+}, []);
 
 // ── Replay synchronisation ──────────────────────────────────────────────────
 // When the active chart is in replay mode, poll its current replay timestamp

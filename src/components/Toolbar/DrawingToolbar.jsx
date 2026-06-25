@@ -63,6 +63,7 @@ const DrawingToolbar = ({ activeTool, onToolChange, isDrawingsLocked = false, is
         {
             id: 'prediction_group',
             items: [
+                { id: 'trade_setup', icon: Icons.TradeSetupIcon, label: 'Trade Setup (R:R)' },
                 { id: 'prediction', icon: Icons.LongPositionIcon, label: 'Long Position' },
                 { id: 'prediction_short', icon: Icons.ShortPositionIcon, label: 'Short Position' },
                 { id: 'date_range', icon: Icons.DateRangeIcon, label: 'Date Range' },
