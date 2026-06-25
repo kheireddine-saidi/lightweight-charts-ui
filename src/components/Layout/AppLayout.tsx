@@ -8,10 +8,10 @@ import AlertsPanel from '../Alerts/AlertsPanel';
 import RightToolbar from '../Toolbar/RightToolbar';
 
 /* ─── Layout grid ─── */
-// Right column = toolbar (52px) + optional panel (280px when visible)
+// Columns: chart (1fr) | optional panel (280px when visible) | toolbar (52px)
 const Layout = styled.div<{ $showPanel: boolean }>`
   display: grid;
-  grid-template-columns: 1fr 52px ${(p) => (p.$showPanel ? '280px' : '0px')};
+  grid-template-columns: 1fr ${(p) => (p.$showPanel ? '280px' : '0px')} 52px;
   grid-template-rows: 1fr 240px;
   height: 100vh;
   width: 100vw;
@@ -59,19 +59,19 @@ const LeftToolbarWrapper = styled.div`
   z-index: 10;
 `;
 
-/* Right toolbar column — spans both rows */
+/* Right toolbar column — spans both rows, now in column 3 (far right) */
 const RightToolbarArea = styled.div`
   grid-row: 1 / 3;
-  grid-column: 2 / 3;
+  grid-column: 3 / 4;
   background: #1e222d;
   border-left: 1px solid #2a2e39;
   overflow: hidden;
 `;
 
-/* Right side panel — spans both rows, hidden when no panel is active */
+/* Right side panel — spans both rows, now in column 2 (between chart and toolbar) */
 const RightPanelArea = styled.div<{ $visible: boolean }>`
   grid-row: 1 / 3;
-  grid-column: 3 / 4;
+  grid-column: 2 / 3;
   background: #1e222d;
   border-left: 1px solid #2a2e39;
   overflow-y: auto;
@@ -149,16 +149,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </ChartOverlay>
       </ChartArea>
 
-      {/* Right toolbar (icon buttons) */}
-      <RightToolbarArea>
-        <RightToolbar
-          activePanel={activeRightPanel}
-          onPanelChange={onRightPanelChange || (() => {})}
-          badges={rightPanelBadges}
-        />
-      </RightToolbarArea>
-
-      {/* Right side panel — swaps content based on activeRightPanel */}
+      {/* Right side panel — now between chart and toolbar */}
       <RightPanelArea $visible={showPanel}>
         {activeRightPanel === 'watchlist' && (
           <Watchlist
@@ -183,6 +174,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           />
         )}
       </RightPanelArea>
+
+      {/* Right toolbar (icon buttons) — now at far right */}
+      <RightToolbarArea>
+        <RightToolbar
+          activePanel={activeRightPanel}
+          onPanelChange={onRightPanelChange || (() => {})}
+          badges={rightPanelBadges}
+        />
+      </RightToolbarArea>
 
       {/* Bottom positions panel */}
       <PositionsArea>
