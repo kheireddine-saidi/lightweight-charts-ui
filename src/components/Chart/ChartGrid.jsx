@@ -1,6 +1,7 @@
 import React from 'react';
 import styles from './ChartGrid.module.css';
 import ChartComponent from './ChartComponent';
+import { ChartErrorBoundary } from './ChartErrorBoundary';
 
 const ChartGrid = ({
     charts,
@@ -30,12 +31,13 @@ const ChartGrid = ({
                     className={`${styles.chartWrapper} ${activeChartId === chart.id && layout !== '1' ? styles.active : ''}`}
                     onClick={() => onActiveChartChange(chart.id)}
                 >
-                    <ChartComponent
-                        ref={(el) => {
-                            if (chartRefs.current) {
-                                chartRefs.current[chart.id] = el;
-                            }
-                        }}
+                    <ChartErrorBoundary>
+                        <ChartComponent
+                            ref={(el) => {
+                                if (chartRefs.current) {
+                                    chartRefs.current[chart.id] = el;
+                                }
+                            }}
                         symbol={chart.symbol}
                         interval={chart.interval}
                         onAlertsSync={onAlertsSync ? (alerts) => onAlertsSync(chart.id, chart.symbol, alerts) : undefined}
@@ -47,6 +49,7 @@ const ChartGrid = ({
                     // Override props that might be specific to the chart state if needed
                     // symbol/interval/indicators are per-chart.
                     />
+                    </ChartErrorBoundary>
                 </div>
             ))}
         </div>

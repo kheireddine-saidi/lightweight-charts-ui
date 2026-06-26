@@ -105,6 +105,8 @@ const ChartComponent = forwardRef(({
     const chartTypeRef = useRef(chartType);
     const dataRef = useRef([]);
     const comparisonSeriesRefs = useRef(new Map());
+    const tradeLinesRef = useRef(new Map());
+    const timeIndexMapRef = useRef(new Map());
 
     // Trade marker primitive (createSeriesMarkers) attached to main series
     const tradeMarkersPrimitiveRef = useRef(null); // the SeriesMarkers wrapper
@@ -373,9 +375,8 @@ useImperativeHandle(ref, () => ({
         { time: startTime, value: price },
         { time: endTime, value: price },
       ]);
-      if (!window._tradeLines) window._tradeLines = {};
       const id = 'tl_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-      window._tradeLines[id] = { series, chart: chartRef.current };
+      tradeLinesRef.current.set(id, { series, chart: chartRef.current });
       return id;
     } catch (e) {
       console.warn('Failed to add horizontal line:', e);
@@ -405,18 +406,20 @@ useImperativeHandle(ref, () => ({
       }
     }
     if (id.startsWith('tl_') || type === 'line') {
-      if (window._tradeLines && window._tradeLines[id]) {
-        const { series, chart } = window._tradeLines[id];
+      const lineInfo = tradeLinesRef.current.get(id);
+      if (lineInfo) {
+        const { series, chart } = lineInfo;
         try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-        delete window._tradeLines[id];
+        tradeLinesRef.current.delete(id);
       }
     }
     // Fallback: try both if no prefix match
     if (!id.startsWith('tm_') && !id.startsWith('tl_') && type === undefined) {
-      if (window._tradeLines && window._tradeLines[id]) {
-        const { series, chart } = window._tradeLines[id];
+      const lineInfo = tradeLinesRef.current.get(id);
+      if (lineInfo) {
+        const { series, chart } = lineInfo;
         try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-        delete window._tradeLines[id];
+        tradeLinesRef.current.delete(id);
       }
     }
   },
@@ -1297,6 +1300,8 @@ useImperativeHandle(ref, () => ({
             } catch (error) {
                 console.warn('Failed to close chart WebSocket', error);
             }
+            tradeLinesRef.current.forEach(({ series, chart }) => { try { chart.removeSeries(series); } catch {} });
+            tradeLinesRef.current.clear();
             try {
                 chart.remove();
             } catch (error) {
@@ -1456,6 +1461,7 @@ useImperativeHandle(ref, () => ({
                     const activeType = chartTypeRef.current;
                     const transformedData = transformData(data, activeType);
                     mainSeriesRef.current.setData(transformedData);
+                    timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
 
                     // Mark chart as ready immediately after data is set
                     // This allows indicators to be added without delay
@@ -1535,7 +1541,11 @@ useImperativeHandle(ref, () => ({
                         }
 
                         if (isValidUpdate && mainSeriesRef.current && !isReplayModeRef.current) {
-                            mainSeriesRef.current.setData(transformedRealtimeData);
+                            // Determine if we're updating the last bar or appending a new bar
+                            const lastTransformed = transformedRealtimeData[transformedRealtimeData.length - 1];
+                            if (lastTransformed) {
+                              mainSeriesRef.current.update(lastTransformed);
+                            }
                             updateRealtimeIndicators(currentData);
                             updateAxisLabel();
                             updateOhlcFromLatest();
@@ -1748,7 +1758,7 @@ useImperativeHandle(ref, () => ({
             const data = param.seriesData.get(mainSeriesRef.current);
             if (data && data.open !== undefined) {
                 // Find previous candle for change calculation
-                const currentIndex = dataRef.current.findIndex(d => d.time === data.time);
+                const currentIndex = timeIndexMapRef.current.get(data.time) ?? -1;
                 const prevData = currentIndex > 0 ? dataRef.current[currentIndex - 1] : null;
                 const change = prevData ? data.close - prevData.close : 0;
                 const changePercent = prevData && prevData.close ? ((change / prevData.close) * 100) : 0;
@@ -2429,7 +2439,6 @@ useEffect(() => {
   return () => {
     // Clean up global trade marker/line storage on unmount
     window._tradeMarkers = {};
-    window._tradeLines = {};
   };
 }, []);
 
