@@ -9,7 +9,8 @@ import {
     createSeriesMarkers,
 } from 'lightweight-charts';
 import styles from './ChartComponent.module.css';
-import { getKlines, subscribeToTicker } from '../../services/binance';
+import { binanceLiveFeed } from '../../feeds/BinanceLiveFeed';
+import { EventBus, Events } from '../../core/EventBus';
 import { calculateSMA, calculateEMA } from '../../utils/indicators';
 import { calculateHeikinAshi } from '../../utils/chartUtils';
 import { intervalToSeconds } from '../../utils/timeframes';
@@ -18,6 +19,7 @@ import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-
 import '../../plugins/line-tools/line-tools.css';
 import ReplayControls from '../Replay/ReplayControls';
 import ReplaySlider from '../Replay/ReplaySlider';
+import { useReplayEngine } from '../../engine/replay/useReplayEngine';
 import TradeSetupTool from './TradeSetupTool';
 
 const TOOL_MAP = {
@@ -115,21 +117,30 @@ const ChartComponent = forwardRef(({
     // Trade setup tool — committed zones (persist after order is placed)
     const [committedTradeZones, setCommittedTradeZones] = useState([]);
 
-    // Replay State
+    // ── Replay state — driven by the singleton ReplayEngine via EventBus ──
+    const {
+        isPlaying,
+        index: replayIndex,
+        speed: replaySpeed,
+        load: replayLoad,
+        play: replayPlay,
+        pause: replayPause,
+        stop: replayStop,
+        step: replayStep,
+        seek: replaySeeek,
+        setSpeed: replaySetSpeed,
+    } = useReplayEngine();
+
     const [isReplayMode, setIsReplayMode] = useState(false);
     const isReplayModeRef = useRef(false); // Ref to track replay mode in callbacks
     useEffect(() => { isReplayModeRef.current = isReplayMode; }, [isReplayMode]);
 
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [replaySpeed, setReplaySpeed] = useState(1);
-    const [replayIndex, setReplayIndex] = useState(null);
     const [isSelectingReplayPoint, setIsSelectingReplayPoint] = useState(false);
     const fullDataRef = useRef([]); // Store full data for replay
     const followerFullDataRef = useRef([]); // Immutable snapshot for follower sync — never mutated by replay
-    const replayIntervalRef = useRef(null);
     const fadedSeriesRef = useRef(null); // Store faded series for future candles
 
-    // Refs for stable callbacks to prevent race conditions
+    // Derived refs kept in sync with hook state (needed in callbacks/closures)
     const replayIndexRef = useRef(null);
     const isPlayingRef = useRef(false);
     const updateReplayDataRef = useRef(null); // Ref to store updateReplayData function
@@ -458,28 +469,24 @@ useImperativeHandle(ref, () => ({
         setIsReplayMode(prev => {
             const newMode = !prev;
             if (!prev) {
+                // Entering replay: load full data into engine
                 fullDataRef.current = [...dataRef.current];
-                setIsPlaying(false);
-                isPlayingRef.current = false;
                 const startIndex = Math.max(0, dataRef.current.length - 1);
-                setReplayIndex(startIndex);
                 replayIndexRef.current = startIndex;
+                replayLoad(fullDataRef.current);
+                replaySeeek(startIndex);
                 setTimeout(() => {
                     if (updateReplayDataRef.current) {
                         updateReplayDataRef.current(startIndex, false);
                     }
                 }, 0);
             } else {
-                stopReplay();
-                setIsPlaying(false);
-                isPlayingRef.current = false;
-                setReplayIndex(null);
+                // Exiting replay: stop engine and restore full data
+                replayStop();
                 replayIndexRef.current = null;
                 setIsSelectingReplayPoint(false);
                 if (fadedSeriesRef.current && chartRef.current) {
-                    try {
-                        chartRef.current.removeSeries(fadedSeriesRef.current);
-                    } catch (e) { /* ignore */ }
+                    try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch (e) { /* ignore */ }
                     fadedSeriesRef.current = null;
                 }
                 if (mainSeriesRef.current && fullDataRef.current.length > 0) {
@@ -1296,7 +1303,7 @@ useImperativeHandle(ref, () => ({
                 console.warn('Failed to disconnect resize observer', error);
             }
             try {
-                if (wsRef.current) wsRef.current.close();
+                if (wsRef.current) { wsRef.current(); wsRef.current = null; }
             } catch (error) {
                 console.warn('Failed to close chart WebSocket', error);
             }
@@ -1442,10 +1449,7 @@ useImperativeHandle(ref, () => ({
         let indicatorFrame = null;
         const abortController = new AbortController();
 
-        if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
+        if (wsRef.current) { wsRef.current(); wsRef.current = null; }
 
         const loadData = async () => {
             isActuallyLoadingRef.current = true;
@@ -1453,7 +1457,7 @@ useImperativeHandle(ref, () => ({
             setIsLoading(true);
 
             try {
-                const data = await getKlines(symbol, interval, 1000, abortController.signal);
+                const data = await binanceLiveFeed.loadHistory(symbol, interval, 1000, abortController.signal);
                 if (cancelled) return;
 
                 if (Array.isArray(data) && data.length > 0 && mainSeriesRef.current) {
@@ -1493,7 +1497,7 @@ useImperativeHandle(ref, () => ({
                         }
                     }, 50);
 
-                    wsRef.current = subscribeToTicker(symbol.toLowerCase(), interval, (ticker) => {
+                    wsRef.current = binanceLiveFeed.subscribe(symbol, interval, (ticker) => {
                         if (cancelled || !ticker) return;
 
                         const parsedCandle = {
@@ -1527,6 +1531,9 @@ useImperativeHandle(ref, () => ({
 
                         dataRef.current = currentData;
 
+                        // Emit candle through EventBus so TradingStore/ExecutionEngine can react
+                        EventBus.emit(Events.CANDLE, { candle: normalizedCandle, index: currentData.length - 1 });
+
                         const currentChartType = chartTypeRef.current;
                         const transformedRealtimeData = transformData(currentData, currentChartType);
                         const latestUpdate = transformedRealtimeData[transformedRealtimeData.length - 1];
@@ -1541,7 +1548,7 @@ useImperativeHandle(ref, () => ({
                         }
 
                         if (isValidUpdate && mainSeriesRef.current && !isReplayModeRef.current) {
-                            // Determine if we're updating the last bar or appending a new bar
+                            // Use series.update() — never setData() — for realtime updates (Task 10)
                             const lastTransformed = transformedRealtimeData[transformedRealtimeData.length - 1];
                             if (lastTransformed) {
                               mainSeriesRef.current.update(lastTransformed);
@@ -1583,10 +1590,7 @@ useImperativeHandle(ref, () => ({
                 cancelAnimationFrame(indicatorFrame);
             }
             abortController.abort();
-            if (wsRef.current) {
-                wsRef.current.close();
-                wsRef.current = null;
-            }
+            if (wsRef.current) { wsRef.current(); wsRef.current = null; }
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [symbol, interval]);
@@ -1594,29 +1598,23 @@ useImperativeHandle(ref, () => ({
     const emaLastValueRef = useRef(null);
 
     const updateRealtimeIndicators = useCallback((data) => {
-        if (!chartRef.current) return;
+        if (!chartRef.current || !data || data.length === 0) return;
 
-        const lastIndex = data.length - 1;
-        const lastDataPoint = data[lastIndex];
+        const lastCandle = data[data.length - 1];
+        if (!lastCandle) return;
 
-        // SMA Indicator
+        // Use series.update() (not setData) — fast O(1) path via IndicatorPlugin.updateIncremental()
+        // SMA
         if (indicators.sma && smaSeriesRef.current) {
-            if (data.length < 20) {
-                const smaData = calculateSMA(data, 20);
-                if (smaData && smaData.length > 0) {
-                    smaSeriesRef.current.setData(smaData);
-                }
-            } else {
-                const subset = data.slice(-20);
-                const sum = subset.reduce((acc, d) => acc + d.close, 0);
-                const average = sum / subset.length;
-                smaSeriesRef.current.update({ time: lastDataPoint.time, value: average });
-            }
+            const subset = data.slice(-20);
+            const average = subset.reduce((acc, d) => acc + d.close, 0) / subset.length;
+            smaSeriesRef.current.update({ time: lastCandle.time, value: average });
         }
 
-        // EMA Indicator
+        // EMA — incremental using stored last value ref (true O(1) EMA)
         if (indicators.ema && emaSeriesRef.current) {
-            if (data.length < 20 || emaLastValueRef.current === null) {
+            if (emaLastValueRef.current === null) {
+                // Need seed — recalculate once
                 const emaData = calculateEMA(data, 20);
                 if (emaData && emaData.length > 0) {
                     emaLastValueRef.current = emaData[emaData.length - 1].value;
@@ -1624,9 +1622,10 @@ useImperativeHandle(ref, () => ({
                 }
             } else {
                 const smoothing = 2 / (20 + 1);
-                const emaValue = (lastDataPoint.close - emaLastValueRef.current) * smoothing + emaLastValueRef.current;
+                const emaValue = (lastCandle.close - emaLastValueRef.current) * smoothing + emaLastValueRef.current;
                 emaLastValueRef.current = emaValue;
-                emaSeriesRef.current.update({ time: lastDataPoint.time, value: emaValue });
+                // series.update() — never setData() during live/replay
+                emaSeriesRef.current.update({ time: lastCandle.time, value: emaValue });
             }
         }
     }, [indicators]);
@@ -1843,7 +1842,7 @@ useImperativeHandle(ref, () => ({
             activeSeries.set(comp.symbol, series);
 
             try {
-                const data = await getKlines(comp.symbol, interval, 1000, abortController.signal);
+                const data = await binanceLiveFeed.loadHistory(comp.symbol, interval, 1000, abortController.signal);
                 // Check if still valid before setting data
                 if (cancelled || !activeSeries.has(comp.symbol)) return;
                 if (data && data.length > 0) {
@@ -1944,12 +1943,9 @@ useImperativeHandle(ref, () => ({
         }
     }, [timeRange, isLoading]);
 
-    // Replay Logic
+    // Replay Logic — playback is now driven by SimulationClock (RAF-based, not setInterval)
     const stopReplay = () => {
-        if (replayIntervalRef.current) {
-            clearInterval(replayIntervalRef.current);
-            replayIntervalRef.current = null;
-        }
+        replayPause();
     };
 
     // Define updateReplayData first since other functions depend on it
@@ -2026,21 +2022,21 @@ useImperativeHandle(ref, () => ({
     }); // no dep array — always up to date
 
     const handleReplayPlayPause = () => {
-        setIsPlaying(prev => !prev);
+        if (isPlaying) {
+            replayPause();
+        } else {
+            replayPlay();
+        }
     };
 
     const handleReplayForward = () => {
-        const currentIndex = replayIndexRef.current;
-        if (currentIndex !== null && currentIndex < fullDataRef.current.length - 1) {
-            const nextIndex = currentIndex + 1;
-            setReplayIndex(nextIndex);
-            updateReplayData(nextIndex);
-        }
+        replayStep();
+        // updateReplayData is called by the EventBus CANDLE listener below
     };
 
     const handleReplayJumpTo = () => {
         setIsSelectingReplayPoint(true);
-        setIsPlaying(false);
+        replayPause();
 
         // Show ALL candles so user can see the full timeline and select a new point
         // But preserve the current zoom level and position
@@ -2119,51 +2115,28 @@ useImperativeHandle(ref, () => ({
         if (index >= 0 && index < fullDataRef.current.length) {
             // Stop playback when user manually changes position
             if (isPlayingRef.current) {
-                setIsPlaying(false);
-                isPlayingRef.current = false;
-                stopReplay();
+                replayPause();
             }
-
-            setReplayIndex(index);
+            replaySeeek(index);
+            // The CANDLE event emitted by seek will drive updateReplayData via EventBus
             updateReplayData(index, hideFuture);
         }
-    }, [updateReplayData]);
+    }, [updateReplayData, replayPause, replaySeeek]);
 
-    // Playback Effect - Fixed race condition and synchronization
+    // Playback Effect — driven by SimulationClock via EventBus (no setInterval).
+    // When replay is active, the clock emits CANDLE events; we subscribe here
+    // and update the chart series for each emitted candle.
     useEffect(() => {
-        if (isPlaying && isReplayMode) {
-            stopReplay();
+        if (!isReplayMode) return;
 
-            // When playback starts, ensure we're showing only candles up to current index
-            // Hide future candles immediately
-            const currentIndex = replayIndexRef.current;
-            if (currentIndex !== null) {
-                updateReplayData(currentIndex, true); // true = hide future candles
-            }
+        const unsub = EventBus.on(Events.CANDLE, ({ candle, index }) => {
+            if (!isReplayModeRef.current) return;
+            replayIndexRef.current = index;
+            updateReplayData(index, true); // true = hide future candles
+        });
 
-            const intervalMs = 1000 / replaySpeed; // 1x = 1 sec, 10x = 0.1 sec
-
-            replayIntervalRef.current = setInterval(() => {
-                // Use ref to get current value and avoid stale closures
-                const currentIndex = replayIndexRef.current;
-
-                if (currentIndex === null || currentIndex >= fullDataRef.current.length - 1) {
-                    setIsPlaying(false);
-                    isPlayingRef.current = false;
-                    return;
-                }
-
-                const nextIndex = currentIndex + 1;
-
-                // Update state and data synchronously - always hide future candles during playback
-                setReplayIndex(nextIndex);
-                updateReplayData(nextIndex, true); // true = hide future candles
-            }, intervalMs);
-        } else {
-            stopReplay();
-        }
-        return () => stopReplay();
-    }, [isPlaying, isReplayMode, replaySpeed, updateReplayData]);
+        return () => unsub();
+    }, [isReplayMode, updateReplayData]);
 
     // Click Handler for Replay Mode - handles direct chart clicks to jump to a position
     // Uses chart.subscribeClick which provides accurate param.time
@@ -2230,7 +2203,7 @@ useImperativeHandle(ref, () => ({
                 }
 
                 // Update replay to the clicked position
-                setReplayIndex(clickedIndex);
+                replaySeeek(clickedIndex);
                 replayIndexRef.current = clickedIndex;
                 updateReplayData(clickedIndex, true); // true = hide future candles
 
@@ -2334,7 +2307,7 @@ useImperativeHandle(ref, () => ({
                         rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
                     }
 
-                    setReplayIndex(selectedIndex);
+                    replaySeeek(selectedIndex);
                     replayIndexRef.current = selectedIndex;
 
                     // Calculate target visible range BEFORE updating data
@@ -2496,8 +2469,9 @@ useEffect(() => {
                     onPlayPause={handleReplayPlayPause}
                     onForward={handleReplayForward}
                     onJumpTo={handleReplayJumpTo}
-                    onSpeedChange={setReplaySpeed}
+                    onSpeedChange={replaySetSpeed}
                     onClose={() => {
+                        replayStop();
                         setIsReplayMode(false);
                         // Notify parent about replay mode change
                         if (onReplayModeChange) {

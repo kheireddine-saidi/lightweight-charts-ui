@@ -1,21 +1,48 @@
 /**
- * ReplayEngine � drift-corrected, frame-accurate replay clock.
- * Uses requestAnimationFrame + performance.now() instead of setInterval
- * to prevent timer drift at high playback speeds.
+ * ReplayEngine — thin adapter between SimulationClock and EventBus.
+ *
+ * Connects the SimulationClock's onCandle / onEnd callbacks to the
+ * application-wide EventBus so all subscribers (Chart, ExecutionEngine,
+ * Analytics) receive candles through a single channel.
+ *
+ * No React imports. No chart imports. No global variables.
  */
+import { SimulationClock } from './SimulationClock';
+import { EventBus, Events } from '../../core/EventBus';
+
 export class ReplayEngine {
-  constructor({ onTick, onEnd, onIndexChange } = {}) {
-    this._onTick = onTick; this._onEnd = onEnd; this._onIndexChange = onIndexChange;
-    this._data = []; this._index = 0; this._speed = 1; this._isPlaying = false;
-    this._targetTime = 0; this._msPerCandle = 1000; this._rafId = null;
+  constructor() {
+    this.clock = new SimulationClock();
+
+    this.clock.onCandle = (candle, index) => {
+      EventBus.emit(Events.CANDLE, { candle, index });
+    };
+
+    this.clock.onEnd = () => {
+      EventBus.emit(Events.REPLAY_STATE, this.clock.state);
+    };
+
+    this.clock.onStateChange = (state) => {
+      EventBus.emit(Events.REPLAY_STATE, state);
+    };
   }
-  load(data) { this.stop(); this._data = data; this._index = 0; this._notifyIndex(); }
-  seek(index) { const clamped = Math.max(0, Math.min(index, this._data.length - 1)); this._index = clamped; this._notifyIndex(); if (this._onTick) this._onTick(this._data[clamped], clamped); }
-  setSpeed(speed) { this._speed = speed; this._msPerCandle = 1000 / speed; }
-  play() { if (this._isPlaying) return; if (this._index >= this._data.length - 1) return; this._isPlaying = true; this._targetTime = performance.now(); this._rafId = requestAnimationFrame(this._tick); }
-  pause() { this._isPlaying = false; if (this._rafId != null) { cancelAnimationFrame(this._rafId); this._rafId = null; } }
-  stop() { this.pause(); this._index = 0; this._notifyIndex(); }
-  get isPlaying() { return this._isPlaying; } get index() { return this._index; } get length() { return this._data.length; }
-  _tick = (now) => { if (!this._isPlaying) return; while (now >= this._targetTime && this._index < this._data.length - 1) { this._index++; this._notifyIndex(); if (this._onTick) this._onTick(this._data[this._index], this._index); this._targetTime += this._msPerCandle; } if (this._index >= this._data.length - 1) { this._isPlaying = false; if (this._onEnd) this._onEnd(); return; } this._rafId = requestAnimationFrame(this._tick); };
-  _notifyIndex() { if (this._onIndexChange) this._onIndexChange(this._index); }
+
+  // ─── Delegate to SimulationClock ────────────────────────────────────────
+
+  load(data)       { this.clock.load(data); }
+  play()           { this.clock.play(); }
+  pause()          { this.clock.pause(); }
+  stop()           { this.clock.stop(); }
+  step()           { this.clock.step(); }
+  seek(index)      { this.clock.seek(index); }
+  setSpeed(speed)  { this.clock.setSpeed(speed); }
+  getCurrentCandle() { return this.clock.getCurrentCandle(); }
+
+  get isPlaying()  { return this.clock.isPlaying; }
+  get index()      { return this.clock.index; }
+  get length()     { return this.clock.length; }
+  get state()      { return this.clock.state; }
 }
+
+/** Application-wide singleton replay engine. */
+export const replayEngine = new ReplayEngine();
