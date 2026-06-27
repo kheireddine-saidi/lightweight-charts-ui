@@ -16,10 +16,11 @@ import RightToolbar from './components/Toolbar/RightToolbar';
 import AlertsPanel from './components/Alerts/AlertsPanel';
 import { AppLayout } from './components/Layout/AppLayout';
 
-import { useMarketStore } from './stores/marketStore';
-import { useTradingStore } from './stores/tradingStore';
-import { useTradeSetupStore } from './stores/tradeSetupStore';
 import { useTradeMarkers } from './hooks/useTradeMarkers';
+import { useWatchlist } from './features/watchlist/useWatchlist';
+import { useAlerts } from './features/alerts/useAlerts';
+import { useReplaySync } from './features/replay/useReplaySync';
+import { EventBus, Events } from './core/EventBus';
 
 
 
@@ -97,9 +98,6 @@ function App() {
   // Refs for multiple charts
   const chartRefs = React.useRef({});
 
-  // Flag to skip next sync (used during resume to prevent duplicate)
-  const skipNextSyncRef = React.useRef(false);
-
   useEffect(() => {
     localStorage.setItem('tv_interval', currentInterval);
   }, [currentInterval]);
@@ -108,34 +106,45 @@ function App() {
   const [searchMode, setSearchMode] = useState('switch'); // 'switch' or 'add'
   // const [indicators, setIndicators] = useState({ sma: false, ema: false }); // Moved to charts state
   const [toast, setToast] = useState(null);
-
   const [snapshotToast, setSnapshotToast] = useState(null);
   const [isAlertOpen, setIsAlertOpen] = useState(false);
   const [alertPrice, setAlertPrice] = useState(null);
 
-  // Alert State (persisted with 24h retention)
-  const [alerts, setAlerts] = useState(() => {
-    const saved = safeParseJSON(localStorage.getItem('tv_alerts'), []);
-    if (!Array.isArray(saved)) return [];
-    const cutoff = Date.now() - ALERT_RETENTION_MS;
-    return saved.filter(a => {
-      const ts = a && a.created_at ? new Date(a.created_at).getTime() : NaN;
-      return Number.isFinite(ts) && ts >= cutoff;
-    });
-  });
-  const alertsRef = React.useRef(alerts); // Ref to avoid race condition in WebSocket callback
-  React.useEffect(() => { alertsRef.current = alerts; }, [alerts]);
+  // Toast timeout refs for cleanup — must be before showToast
+  const toastTimeoutRef = React.useRef(null);
+  const snapshotToastTimeoutRef = React.useRef(null);
 
-  const [alertLogs, setAlertLogs] = useState(() => {
-    const saved = safeParseJSON(localStorage.getItem('tv_alert_logs'), []);
-    if (!Array.isArray(saved)) return [];
-    const cutoff = Date.now() - ALERT_RETENTION_MS;
-    return saved.filter(l => {
-      const ts = l && l.time ? new Date(l.time).getTime() : NaN;
-      return Number.isFinite(ts) && ts >= cutoff;
-    });
-  });
-  const [unreadAlertCount, setUnreadAlertCount] = useState(0);
+  // Show toast helper — defined here so it can be passed into hooks below
+  const showToast = (message, type = 'error') => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setToast({ message, type });
+    toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
+  };
+
+  const showSnapshotToast = (message) => {
+    if (snapshotToastTimeoutRef.current) {
+      clearTimeout(snapshotToastTimeoutRef.current);
+    }
+    setSnapshotToast({ message });
+    snapshotToastTimeoutRef.current = setTimeout(() => setSnapshotToast(null), 3000);
+  };
+
+  // Alert State (persisted with 24h retention)
+  const {
+    alerts,
+    alertLogs,
+    unreadAlertCount,
+    skipNextSyncRef,
+    handleSaveAlert: _handleSaveAlert,
+    handleRemoveAlert: _handleRemoveAlert,
+    handleRestartAlert: _handleRestartAlert,
+    handlePauseAlert: _handlePauseAlert,
+    handleChartAlertsSync: _handleChartAlertsSync,
+    handleChartAlertTriggered: _handleChartAlertTriggered,
+    markAlertsRead,
+  } = useAlerts(currentSymbol, showToast);
 
   // Bottom Bar State
   const [currentTimeRange, setCurrentTimeRange] = useState('All');
@@ -158,27 +167,6 @@ function App() {
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
-  };
-
-  // Toast timeout refs for cleanup
-  const toastTimeoutRef = React.useRef(null);
-  const snapshotToastTimeoutRef = React.useRef(null);
-
-  // Show toast helper with cleanup to prevent memory leaks
-  const showToast = (message, type = 'error') => {
-    if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
-    }
-    setToast({ message, type });
-    toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
-  };
-
-  const showSnapshotToast = (message) => {
-    if (snapshotToastTimeoutRef.current) {
-      clearTimeout(snapshotToastTimeoutRef.current);
-    }
-    setSnapshotToast(message);
-    snapshotToastTimeoutRef.current = setTimeout(() => setSnapshotToast(null), 3000);
   };
 
   // Cleanup toast timeouts on unmount
@@ -300,222 +288,14 @@ function App() {
   };
 
   // Load watchlist from localStorage or default
-  const [watchlistSymbols, setWatchlistSymbols] = useState(() => {
-    const saved = safeParseJSON(localStorage.getItem('tv_watchlist'), null);
-    return Array.isArray(saved) && saved.length ? saved : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'DOTUSDT'];
-  });
+  const {
+    watchlistSymbols,
+    setWatchlistSymbols,
+    watchlistData,
+    handleWatchlistReorder,
+    handleRemoveFromWatchlist,
+  } = useWatchlist(showToast);
 
-  const [watchlistData, setWatchlistData] = useState([]);
-
-  // Persist watchlist
-  useEffect(() => {
-    localStorage.setItem('tv_watchlist', JSON.stringify(watchlistSymbols));
-  }, [watchlistSymbols]);
-
-  // Fetch watchlist data
-  useEffect(() => {
-    let ws = null;
-    let mounted = true;
-    let initialDataLoaded = false;
-    const abortController = new AbortController();
-
-    const hydrateWatchlist = async () => {
-      try {
-        const promises = watchlistSymbols.map(async (sym) => {
-          const data = await getTickerPrice(sym, abortController.signal);
-          if (data && mounted) {
-            return {
-              symbol: sym,
-              last: parseFloat(data.lastPrice).toFixed(2),
-              chg: parseFloat(data.priceChange).toFixed(2),
-              chgP: parseFloat(data.priceChangePercent).toFixed(2) + '%',
-              up: parseFloat(data.priceChange) >= 0
-            };
-          }
-          return null;
-        });
-
-        const results = await Promise.all(promises);
-        if (mounted) {
-          setWatchlistData(results.filter(r => r !== null));
-          initialDataLoaded = true;
-        }
-      } catch (error) {
-        console.error('Error fetching watchlist data:', error);
-        if (mounted) {
-          showToast('Failed to load watchlist data', 'error');
-          initialDataLoaded = true;
-        }
-      }
-
-      if (!mounted || watchlistSymbols.length === 0) {
-        if (mounted && watchlistSymbols.length === 0) {
-          setWatchlistData([]);
-          initialDataLoaded = true;
-        }
-        return;
-      }
-
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
-
-      ws = subscribeToMultiTicker(watchlistSymbols, (ticker) => {
-        if (!mounted || !initialDataLoaded) return;
-        setWatchlistData(prev => {
-          const index = prev.findIndex(item => item.symbol === ticker.symbol);
-          if (index !== -1) {
-            const newData = [...prev];
-            newData[index] = {
-              ...newData[index],
-              last: ticker.last.toFixed(2),
-              chg: ticker.chg.toFixed(2),
-              chgP: ticker.chgP.toFixed(2) + '%',
-              up: ticker.chg >= 0
-            };
-            return newData;
-          }
-          return prev;
-        });
-      });
-    };
-
-    hydrateWatchlist();
-
-    return () => {
-      mounted = false;
-      abortController.abort();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
-    };
-  }, [watchlistSymbols]);
-
-  // Persist alerts/logs to localStorage with 24h retention
-  useEffect(() => {
-    const cutoff = Date.now() - ALERT_RETENTION_MS;
-    const filtered = alerts.filter(a => {
-      const ts = a && a.created_at ? new Date(a.created_at).getTime() : NaN;
-      return Number.isFinite(ts) && ts >= cutoff;
-    });
-
-    if (filtered.length !== alerts.length) {
-      setAlerts(filtered);
-      return; // avoid persisting stale data in this pass
-    }
-
-    try {
-      localStorage.setItem('tv_alerts', JSON.stringify(filtered));
-    } catch (error) {
-      console.error('Failed to persist alerts:', error);
-    }
-  }, [alerts]);
-
-  useEffect(() => {
-    const cutoff = Date.now() - ALERT_RETENTION_MS;
-    const filtered = alertLogs.filter(l => {
-      const ts = l && l.time ? new Date(l.time).getTime() : NaN;
-      return Number.isFinite(ts) && ts >= cutoff;
-    });
-
-    if (filtered.length !== alertLogs.length) {
-      setAlertLogs(filtered);
-      return;
-    }
-
-    try {
-      localStorage.setItem('tv_alert_logs', JSON.stringify(filtered));
-    } catch (error) {
-      console.error('Failed to persist alert logs:', error);
-    }
-  }, [alertLogs]);
-
-  // Check Alerts Logic (only for non line-tools alerts to avoid conflicting with plugin)
-  // Uses alertsRef to check current alerts without triggering reconnections
-  const alertSymbolsRef = React.useRef([]);
-
-  // Update symbol list when alerts change, but only if symbols actually changed
-  useEffect(() => {
-    const activeNonLineToolAlerts = alerts.filter(a => a.status === 'Active' && a._source !== 'lineTools');
-    const newSymbols = [...new Set(activeNonLineToolAlerts.map(a => a.symbol))].sort();
-    const currentSymbols = alertSymbolsRef.current;
-
-    // Only update ref if symbol list actually changed
-    if (JSON.stringify(newSymbols) !== JSON.stringify(currentSymbols)) {
-      alertSymbolsRef.current = newSymbols;
-    }
-  }, [alerts]);
-
-  // Separate effect for WebSocket - only reconnects when symbols actually change
-  const [alertWsSymbols, setAlertWsSymbols] = useState([]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const currentSymbols = alertSymbolsRef.current;
-      if (JSON.stringify(currentSymbols) !== JSON.stringify(alertWsSymbols)) {
-        setAlertWsSymbols([...currentSymbols]);
-      }
-    }, 1000); // Check every second instead of on every alert change
-
-    return () => clearInterval(interval);
-  }, [alertWsSymbols]);
-
-  useEffect(() => {
-    if (alertWsSymbols.length === 0) return;
-
-    const ws = subscribeToMultiTicker(alertWsSymbols, (ticker) => {
-      setAlerts(prevAlerts => {
-        let hasChanges = false;
-        const newAlerts = prevAlerts.map(alert => {
-          if (alert._source === 'lineTools') return alert; // never auto-trigger plugin alerts
-          if (alert.status !== 'Active' || alert.symbol !== ticker.symbol) return alert;
-
-          const currentPrice = parseFloat(ticker.last);
-          const targetPrice = parseFloat(alert.price);
-          if (!Number.isFinite(currentPrice) || !Number.isFinite(targetPrice) || targetPrice === 0) return alert;
-
-          // Simple crossing logic (triggered if price is within 0.1% range)
-          const threshold = targetPrice * 0.001; // 0.1% tolerance
-
-          if (Math.abs(currentPrice - targetPrice) <= threshold) {
-            hasChanges = true;
-
-            const displayPrice = formatPrice(targetPrice);
-
-            // Log the alert
-            const logEntry = {
-              id: Date.now(),
-              alertId: alert.id,
-              symbol: alert.symbol,
-              message: `Alert triggered: ${alert.symbol} crossed ${displayPrice}`,
-              time: new Date().toISOString()
-            };
-            setAlertLogs(prev => [logEntry, ...prev]);
-            setUnreadAlertCount(prev => prev + 1);
-            showToast(`Alert Triggered: ${alert.symbol} at ${displayPrice}`, 'info');
-
-            return { ...alert, status: 'Triggered' };
-          }
-          return alert;
-        });
-
-        return hasChanges ? newAlerts : prevAlerts;
-      });
-    });
-
-    return () => {
-      if (ws) ws.close();
-    };
-  }, [alertWsSymbols]);
-
-  const handleWatchlistReorder = (newSymbols) => {
-    setWatchlistSymbols(newSymbols);
-    // Optimistically update data order to prevent flicker
-    setWatchlistData(prev => {
-      const dataMap = new Map(prev.map(item => [item.symbol, item]));
-      return newSymbols.map(sym => dataMap.get(sym)).filter(Boolean);
-    });
-  };
 
   const handleSymbolChange = (symbol) => {
     if (searchMode === 'switch') {
@@ -557,10 +337,6 @@ function App() {
       }
       setIsSearchOpen(false);
     }
-  };
-
-  const handleRemoveFromWatchlist = (symbol) => {
-    setWatchlistSymbols(prev => prev.filter(s => s !== symbol));
   };
 
   const handleWatchlistSymbolSelect = (symbol) => {
@@ -806,339 +582,41 @@ function App() {
     }
   };
 
-  const handleSaveAlert = (alertData) => {
-    const priceDisplay = formatPrice(alertData.value);
-
-    const newAlert = {
-      id: Date.now(),
-      symbol: currentSymbol,
-      price: priceDisplay,
-      condition: `Crossing ${priceDisplay}`,
-      status: 'Active',
-      created_at: new Date().toISOString(),
-    };
-
-    // Add alert to state so it appears in the Alerts panel
-    setAlerts(prev => [...prev, newAlert]);
-
-    // Show toast with formatted price
-    showToast(`Alert created for ${currentSymbol} at ${priceDisplay}`, 'success');
-
-    // Also create a visual alert on the active chart via the line-tools alerts primitive
-    const activeRef = chartRefs.current[activeChartId];
-    if (activeRef && typeof activeRef.addPriceAlert === 'function') {
-      activeRef.addPriceAlert(newAlert);
-    }
-  };
-
-  const handleRemoveAlert = (id) => {
-    setAlerts(prev => {
-      const target = prev.find(a => a.id === id);
-
-      // If this alert came from the chart-side line-tools primitive, also
-      // remove it from the chart so the marker disappears.
-      if (target && target._source === 'lineTools' && target.chartId != null && target.externalId) {
-        const chartRef = chartRefs.current[target.chartId];
-        if (chartRef && typeof chartRef.removePriceAlert === 'function') {
-          chartRef.removePriceAlert(target.externalId);
-        }
-      }
-
-      return prev.filter(a => a.id !== id);
-    });
-  };
-
-  const handleRestartAlert = (id) => {
-    // Find the alert first (outside setAlerts to access chartRefs)
-    const target = alerts.find(a => a.id === id);
-    if (!target) return;
-
-    // Extract original condition from the alert's condition string
-    let originalCondition = 'crossing';
-    if (target.condition) {
-      const condLower = target.condition.toLowerCase();
-      if (condLower.includes('crossing_down') || condLower.includes('crossing down')) {
-        originalCondition = 'crossing_down';
-      } else if (condLower.includes('crossing_up') || condLower.includes('crossing up')) {
-        originalCondition = 'crossing_up';
-      }
-    }
-
-    // Store the alert ID that is being resumed (sync will update its externalId)
-    skipNextSyncRef.current = { type: 'resume', alertId: id, chartId: target.chartId };
-
-    // Add alert back to chart
-    if (target._source === 'lineTools' && target.chartId != null) {
-      const chartRef = chartRefs.current[target.chartId];
-      if (chartRef && typeof chartRef.restartPriceAlert === 'function') {
-        chartRef.restartPriceAlert(target.price, originalCondition);
-      }
-    }
-
-    // Update status to Active (keep same ID)
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'Active' } : a));
-  };
-
-  const handlePauseAlert = (id) => {
-    const target = alerts.find(a => a.id === id);
-    if (!target) return;
-
-    // Set flag to skip next sync (prevents the alert from being deleted)
-    skipNextSyncRef.current = { type: 'pause' };
-
-    // Remove the visual alert from the chart
-    if (target._source === 'lineTools' && target.chartId != null && target.externalId) {
-      const chartRef = chartRefs.current[target.chartId];
-      if (chartRef && typeof chartRef.removePriceAlert === 'function') {
-        chartRef.removePriceAlert(target.externalId);
-      }
-    }
-
-    // Update status to Paused
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'Paused' } : a));
-  };
-
-  const handleChartAlertsSync = (chartId, symbol, chartAlerts) => {
-    const syncInfo = skipNextSyncRef.current;
-
-    // If pausing, skip sync entirely (preserve paused alert in state)
-    if (syncInfo && syncInfo.type === 'pause') {
-      skipNextSyncRef.current = null;
-      return;
-    }
-
-    // If resuming, update the externalId of the resumed alert AND set status to Active
-    if (syncInfo && syncInfo.type === 'resume' && syncInfo.chartId === chartId) {
-      skipNextSyncRef.current = null;
-
-      // Find the new chart alert that was just created
-      const existingForChart = alerts.filter(a => a._source === 'lineTools' && a.chartId === chartId && a.status === 'Active');
-      const existingExternalIds = new Set(existingForChart.map(a => a.externalId));
-      const newChartAlert = (chartAlerts || []).find(a => !existingExternalIds.has(a.id));
-
-      if (newChartAlert) {
-        // Update the resumed alert with the new externalId AND ensure status is Active
-        setAlerts(prev => prev.map(a =>
-          a.id === syncInfo.alertId ? { ...a, externalId: newChartAlert.id, status: 'Active' } : a
-        ));
-      }
-      return;
-    }
-
-    setAlerts(prev => {
-      // Create a set of chart alert externalIds
-      const chartAlertIds = new Set((chartAlerts || []).map(a => a.id));
-
-      // Track existing alerts for this chart
-      const existingForChart = prev.filter(a => a._source === 'lineTools' && a.chartId === chartId);
-      const existingExternalIds = new Set(existingForChart.map(a => a.externalId));
-
-      // Keep alerts that:
-      // - Are NOT lineTools for this chart
-      // - Are Triggered or Paused
-      // - Are Active and still exist in chart
-      const remaining = prev.filter(a => {
-        if (a._source !== 'lineTools' || a.chartId !== chartId) return true;
-        if (a.status === 'Triggered' || a.status === 'Paused') return true;
-        return chartAlertIds.has(a.externalId);
-      });
-
-      // Find NEW chart alerts (not in existing externalIds)
-      const newChartAlerts = (chartAlerts || []).filter(a => !existingExternalIds.has(a.id));
-
-      // Create entries for truly new alerts
-      const newMapped = newChartAlerts.map(a => {
-        const priceDisplay = formatPrice(a.price);
-
-        // Format condition display
-        let conditionDisplay = `Crossing ${priceDisplay}`;
-        if (a.condition === 'crossing_up') {
-          conditionDisplay = `Crossing Up ${priceDisplay}`;
-        } else if (a.condition === 'crossing_down') {
-          conditionDisplay = `Crossing Down ${priceDisplay}`;
-        } else if (a.condition && a.condition !== 'crossing') {
-          conditionDisplay = a.condition;
-        }
-
-        showToast(`Alert created for ${symbol} at ${priceDisplay}`, 'success');
-
-        return {
-          id: `lt-${chartId}-${a.id}`,
-          externalId: a.id,
-          symbol,
-          price: priceDisplay,
-          condition: conditionDisplay,
-          status: 'Active',
-          created_at: new Date().toISOString(),
-          _source: 'lineTools',
-          chartId,
-        };
-      });
-
-      return [...remaining, ...newMapped];
-    });
-  };
-
-  const handleChartAlertTriggered = (chartId, symbol, evt) => {
-    const displayPrice = formatPrice(evt.price ?? evt.alertPrice);
-    const timestamp = evt.timestamp ? new Date(evt.timestamp).toISOString() : new Date().toISOString();
-
-    // Log entry for the Logs tab
-    const logEntry = {
-      id: Date.now(),
-      alertId: evt.externalId || evt.alertId,
-      symbol,
-      message: `Alert triggered: ${symbol} crossed ${displayPrice}`,
-      time: timestamp,
-    };
-    setAlertLogs(prev => [logEntry, ...prev]);
-    setUnreadAlertCount(prev => prev + 1);
-    showToast(`Alert Triggered: ${symbol} at ${displayPrice}`, 'info');
-
-    // Mark corresponding alert as Triggered in the Alerts tab, or add a new history row
-    setAlerts(prev => {
-      let updated = false;
-      const next = prev.map(a => {
-        if (a._source === 'lineTools' && a.chartId === chartId && a.externalId === (evt.externalId || evt.alertId)) {
-          updated = true;
-          return { ...a, status: 'Triggered' };
-        }
-        return a;
-      });
-
-      if (!updated) {
-        next.unshift({
-          id: `lt-${chartId}-${evt.externalId || evt.alertId}-triggered-${Date.now()}`,
-          externalId: evt.externalId || evt.alertId,
-          symbol,
-          price: displayPrice,
-          condition: evt.condition || `Crossing ${displayPrice}`,
-          status: 'Triggered',
-          created_at: timestamp,
-          _source: 'lineTools',
-          chartId,
-        });
-      }
-
-      return next;
-    });
-  };
+  // Wrappers that bind chartRefs/activeChartId into the hook functions
+  const handleSaveAlert = (alertData) => _handleSaveAlert(alertData, chartRefs, activeChartId);
+  const handleRemoveAlert = (id) => _handleRemoveAlert(id, chartRefs);
+  const handleRestartAlert = (id) => _handleRestartAlert(id, alerts, chartRefs);
+  const handlePauseAlert = (id) => _handlePauseAlert(id, alerts, chartRefs);
+  const handleChartAlertsSync = (chartId, symbol, chartAlerts) =>
+    _handleChartAlertsSync(chartId, symbol, chartAlerts, alerts);
+  const handleChartAlertTriggered = (chartId, symbol, evt) =>
+    _handleChartAlertTriggered(chartId, symbol, evt);
 
   const handleRightPanelToggle = (panel) => {
     setActiveRightPanel(panel);
     if (panel === 'alerts') {
-      setUnreadAlertCount(0); // Clear badge when opening alerts
+      markAlertsRead();
     }
   };
 
-// Poll current price from active chart and update trading store
-useEffect(() => {
-  const interval = setInterval(() => {
-    const activeRef = chartRefs.current[activeChartId];
-    if (activeRef && typeof activeRef.getCurrentPrice === 'function') {
-      const price = activeRef.getCurrentPrice();
-      const time = activeRef.getCurrentTime?.() || Math.floor(Date.now() / 1000);
-      if (price !== null && price !== undefined && !isNaN(price)) {
-        useMarketStore.getState().setCurrentPrice(price);
-        const ohlc = typeof activeRef.getCurrentOHLC === 'function'
-          ? activeRef.getCurrentOHLC()
-          : null;
-        const high = ohlc?.high ?? price;
-        const low = ohlc?.low ?? price;
-        const { filled, closed } = useTradingStore.getState().updatePnLAndCheckSLTP(price, time, high, low);
-
-        // Sync zone status when pending orders fill
-        if (filled && filled.length > 0) {
-          filled.forEach(pos => {
-            Object.values(chartRefs.current).forEach(ref => {
-              if (ref && typeof ref.updateTradeZone === 'function') {
-                // Find zone linked to this position
-                ref.updateTradeZone(null, null, pos.id, 'open'); // uses positionId lookup
-              }
-            });
-          });
-        }
-        // Sync zone status when positions close (SL/TP hit)
-        if (closed && closed.length > 0) {
-          closed.forEach(({ pos }) => {
-            Object.values(chartRefs.current).forEach(ref => {
-              if (ref && typeof ref.updateTradeZone === 'function') {
-                ref.updateTradeZone(null, null, pos.id, 'closed');
-              }
-            });
-          });
-        }
-      }
-    }
-  }, 100);
-  return () => clearInterval(interval);
-}, [activeChartId, chartRefs]);
 
 useTradeMarkers(chartRefs, activeChartId, charts);
 
-// Listen to tradeSetupStore for cross-component events
+// Replay synchronisation via extracted hook
+useReplaySync(isReplayMode, activeChartId, chartRefs);
+
+// Listen to EventBus for trade setup events (Phase 5)
 React.useEffect(() => {
-  return useTradeSetupStore.subscribe((state) => {
-    // Auto-switch right panel to Trading when a trade setup is drawn
-    if (state.requestTradingPanel) {
-      setActiveRightPanel('trading');
-      useTradeSetupStore.getState().setSetup({ requestTradingPanel: false });
-    }
-    // Link a zone to the newly placed order so drag updates the order
-    if (state.zoneLink) {
-      const { zoneId, positionId, status } = state.zoneLink;
-      // Update zones in all chart components that carry this zone
-      // We do it by pushing through chartRefs: each ChartComponent exposes
-      // updateTradeZone(zoneId, fields) via its imperative handle
-      Object.values(chartRefs.current).forEach(ref => {
-        if (ref && typeof ref.updateTradeZone === 'function') {
-          ref.updateTradeZone(zoneId, { positionId, status });
-        }
-      });
-      useTradeSetupStore.getState().setSetup({ zoneLink: null });
-    }
+  const unsubDrawn = EventBus.on(Events.TRADE_SETUP_DRAWN, () => {
+    setActiveRightPanel('trading');
   });
+  const unsubLink = EventBus.on(Events.TRADE_ZONE_LINKED, ({ zoneId, positionId, status }) => {
+    Object.values(chartRefs.current).forEach(ref => {
+      ref?.updateTradeZone?.(zoneId, { positionId, status });
+    });
+  });
+  return () => { unsubDrawn(); unsubLink(); };
 }, []);
-
-// ── Replay synchronisation ──────────────────────────────────────────────────
-// When the active chart is in replay mode, poll its current replay timestamp
-// and broadcast it to every other chart via syncToTimestamp().
-// We also pass the master chart's raw OHLC bars so follower charts on a
-// higher timeframe can build their currently-forming candle dynamically,
-// tick-by-tick, exactly as they would in live trading.
-React.useEffect(() => {
-  if (!isReplayMode) {
-    // Replay ended on the active chart → restore all follower charts
-    Object.entries(chartRefs.current).forEach(([id, ref]) => {
-      if (Number(id) !== activeChartId && ref && typeof ref.exitFollowerReplay === 'function') {
-        ref.exitFollowerReplay();
-      }
-    });
-    return;
-  }
-
-  const syncInterval = setInterval(() => {
-    const masterRef = chartRefs.current[activeChartId];
-    if (!masterRef || typeof masterRef.getReplayTimestamp !== 'function') return;
-    const masterTs = masterRef.getReplayTimestamp();
-    if (masterTs === null) return;
-
-    // Get the master's LTF bars up to the current replay point so follower
-    // HTF charts can aggregate them into a live-updating candle.
-    const ltfBars = typeof masterRef.getReplayBars === 'function'
-      ? masterRef.getReplayBars()
-      : [];
-
-    Object.entries(chartRefs.current).forEach(([id, ref]) => {
-      if (Number(id) !== activeChartId && ref && typeof ref.syncToTimestamp === 'function') {
-        ref.syncToTimestamp(masterTs, ltfBars);
-      }
-    });
-  }, 100); // sync every 100 ms — fast enough for smooth playback
-
-  return () => clearInterval(syncInterval);
-}, [isReplayMode, activeChartId, chartRefs]);
-// ───────────────────────────────────────────────────────────────────────────
 
 const getCurrentTime = useCallback(() => {
   const ref = chartRefs.current[activeChartId];

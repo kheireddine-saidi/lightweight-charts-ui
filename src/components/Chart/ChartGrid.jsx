@@ -2,6 +2,7 @@ import React from 'react';
 import styles from './ChartGrid.module.css';
 import ChartComponent from './ChartComponent';
 import { ChartErrorBoundary } from './ChartErrorBoundary';
+import { binanceLiveFeed } from '../../feeds/BinanceLiveFeed';
 
 const ChartGrid = ({
     charts,
@@ -38,6 +39,7 @@ const ChartGrid = ({
                                     chartRefs.current[chart.id] = el;
                                 }
                             }}
+                        feed={binanceLiveFeed}
                         symbol={chart.symbol}
                         interval={chart.interval}
                         onAlertsSync={onAlertsSync ? (alerts) => onAlertsSync(chart.id, chart.symbol, alerts) : undefined}

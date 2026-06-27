@@ -52,6 +52,12 @@ export const Events = Object.freeze({
 
   /** Session snapshot restored. payload: { snapshot } */
   SNAPSHOT_RESTORED: 'SNAPSHOT_RESTORED',
+
+  /** User finished drawing a trade setup. payload: { setup } */
+  TRADE_SETUP_DRAWN: 'TRADE_SETUP_DRAWN',
+
+  /** A trade zone should be linked to a position. payload: { zoneId, positionId, status } */
+  TRADE_ZONE_LINKED: 'TRADE_ZONE_LINKED',
 });
 
 class EventBusClass {

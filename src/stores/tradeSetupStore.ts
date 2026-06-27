@@ -4,6 +4,7 @@
 // written here and TradingPanel reads them to pre-fill its inputs.
 
 import { create } from 'zustand';
+import { EventBus, Events } from '../core/EventBus';
 
 interface TradeSetup {
   entryPrice: number | null;
@@ -11,13 +12,11 @@ interface TradeSetup {
   takeProfit: number | null;
   side: 'long' | 'short' | null;
   isReady: boolean;
-  requestTradingPanel: boolean;
   zoneId: string | null;
-  zoneLink: { zoneId: string; positionId: string; status: string } | null;
 }
 
 interface TradeSetupState extends TradeSetup {
-  setSetup: (setup: Partial<TradeSetup>) => void;
+  setSetup: (setup: Partial<TradeSetup & { requestTradingPanel?: boolean; zoneLink?: { zoneId: string; positionId: string; status: string } | null }>) => void;
   clearSetup: () => void;
 }
 
@@ -27,13 +26,29 @@ const EMPTY: TradeSetup = {
   takeProfit: null,
   side: null,
   isReady: false,
-  requestTradingPanel: false,
   zoneId: null,
-  zoneLink: null,
 };
 
-export const useTradeSetupStore = create<TradeSetupState>((set) => ({
+export const useTradeSetupStore = create<TradeSetupState>((set, get) => ({
   ...EMPTY,
-  setSetup: (setup) => set((s) => ({ ...s, ...setup })),
+  setSetup: (setup) => {
+    // Intercept requestTradingPanel → emit EventBus event
+    if (setup.requestTradingPanel) {
+      EventBus.emit(Events.TRADE_SETUP_DRAWN, { setup: get() });
+      // Don't store requestTradingPanel in state
+      const { requestTradingPanel, zoneLink, ...rest } = setup as any;
+      if (Object.keys(rest).length > 0) set((s) => ({ ...s, ...rest }));
+      return;
+    }
+    // Intercept zoneLink → emit EventBus event
+    if (setup.zoneLink != null) {
+      const { zoneId, positionId, status } = setup.zoneLink;
+      EventBus.emit(Events.TRADE_ZONE_LINKED, { zoneId, positionId, status });
+      const { zoneLink, ...rest } = setup as any;
+      if (Object.keys(rest).length > 0) set((s) => ({ ...s, ...rest }));
+      return;
+    }
+    set((s) => ({ ...s, ...setup }));
+  },
   clearSetup: () => set(EMPTY),
 }));

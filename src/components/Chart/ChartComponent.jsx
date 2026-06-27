@@ -9,10 +9,10 @@ import {
     createSeriesMarkers,
 } from 'lightweight-charts';
 import styles from './ChartComponent.module.css';
-import { binanceLiveFeed } from '../../feeds/BinanceLiveFeed';
+import { binanceLiveFeed as binanceLiveFeedSingleton } from '../../feeds/BinanceLiveFeed';
 import { EventBus, Events } from '../../core/EventBus';
-import { calculateSMA, calculateEMA } from '../../utils/indicators';
 import { calculateHeikinAshi } from '../../utils/chartUtils';
+import { IndicatorRegistry, INDICATOR_CONSTRUCTORS } from '../../indicators/registry';
 import { intervalToSeconds } from '../../utils/timeframes';
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
@@ -65,6 +65,7 @@ const TOOL_MAP = {
 };
 
 const ChartComponent = forwardRef(({
+    feed,          // ← new: must implement IDataFeed
     symbol,
     interval,
     chartType,
@@ -86,20 +87,15 @@ const ChartComponent = forwardRef(({
     isTimerVisible = false,
 }, ref) => {
 
-    const markerRefs = useRef([]);
-    const lineRefs = useRef([]);
-    const markerCounter = useRef(0);
-    const lineCounter = useRef(0);
-    const markerCounterRef = useRef(0);
-    const lineCounterRef = useRef(0);
+    // Fallback to live feed if no feed prop provided (backward compat)
+    const activeFeed = feed ?? binanceLiveFeedSingleton;
 
     const chartContainerRef = useRef();
     const [isLoading, setIsLoading] = useState(true);
     const isActuallyLoadingRef = useRef(true); // Track if we're actually loading data (not just updating indicators) - start as true on mount
     const chartRef = useRef(null);
     const mainSeriesRef = useRef(null);
-    const smaSeriesRef = useRef(null);
-    const emaSeriesRef = useRef(null);
+    const indicatorRegistryRef = useRef(new IndicatorRegistry());
     const chartReadyRef = useRef(false); // Track when chart is fully stable and ready for indicator additions
     const lineToolManagerRef = useRef(null);
     const priceScaleTimerRef = useRef(null); // Ref for the candle countdown timer
@@ -568,8 +564,8 @@ useImperativeHandle(ref, () => ({
                 liveBar = {
                     time: currentHTFBar.time, // HTF bar opens at this time
                     open: barsInHTF[0].open,
-                    high: Math.max(...barsInHTF.map(b => b.high)),
-                    low: Math.min(...barsInHTF.map(b => b.low)),
+                    high: barsInHTF.reduce((m, b) => b.high > m ? b.high : m, -Infinity),
+                    low:  barsInHTF.reduce((m, b) => b.low < m ? b.low : m, Infinity),
                     close: barsInHTF[barsInHTF.length - 1].close,
                 };
             }
@@ -1152,9 +1148,11 @@ useImperativeHandle(ref, () => ({
                 console.warn('Failed to initialize alert symbol name', err);
             }
 
+            if (import.meta.env.DEV) {
             window.lineToolManager = manager;
             window.chartInstance = chartRef.current;
             window.seriesInstance = series;
+            }
         }
     };
 
@@ -1282,9 +1280,11 @@ useImperativeHandle(ref, () => ({
 
         return () => {
             // Clean up global window references to prevent memory leaks
+            if (import.meta.env.DEV) {
             window.lineToolManager = null;
             window.chartInstance = null;
             window.seriesInstance = null;
+            }
 
             try {
                 chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleTimeRangeChange);
@@ -1360,6 +1360,7 @@ useImperativeHandle(ref, () => ({
         const existingData = transformData(dataRef.current, chartType);
         if (existingData.length) {
             replacementSeries.setData(existingData);
+            indicatorRegistryRef.current.reattachAll(dataRef.current, chartRef.current);
             updateIndicators(dataRef.current, indicators);
             applyDefaultCandlePosition(existingData.length);
             updateAxisLabel();
@@ -1457,7 +1458,7 @@ useImperativeHandle(ref, () => ({
             setIsLoading(true);
 
             try {
-                const data = await binanceLiveFeed.loadHistory(symbol, interval, 1000, abortController.signal);
+                const data = await activeFeed.loadHistory(symbol, interval, 1000, abortController.signal);
                 if (cancelled) return;
 
                 if (Array.isArray(data) && data.length > 0 && mainSeriesRef.current) {
@@ -1497,7 +1498,7 @@ useImperativeHandle(ref, () => ({
                         }
                     }, 50);
 
-                    wsRef.current = binanceLiveFeed.subscribe(symbol, interval, (ticker) => {
+                    wsRef.current = activeFeed.subscribe(symbol, interval, (ticker) => {
                         if (cancelled || !ticker) return;
 
                         const parsedCandle = {
@@ -1553,7 +1554,7 @@ useImperativeHandle(ref, () => ({
                             if (lastTransformed) {
                               mainSeriesRef.current.update(lastTransformed);
                             }
-                            updateRealtimeIndicators(currentData);
+                            updateRealtimeIndicators(currentData[currentData.length - 1]);
                             updateAxisLabel();
                             updateOhlcFromLatest();
 
@@ -1581,7 +1582,6 @@ useImperativeHandle(ref, () => ({
             }
         };
 
-        emaLastValueRef.current = null;
         loadData();
 
         return () => {
@@ -1595,119 +1595,33 @@ useImperativeHandle(ref, () => ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [symbol, interval]);
 
-    const emaLastValueRef = useRef(null);
-
-    const updateRealtimeIndicators = useCallback((data) => {
-        if (!chartRef.current || !data || data.length === 0) return;
-
-        const lastCandle = data[data.length - 1];
-        if (!lastCandle) return;
-
-        // Use series.update() (not setData) — fast O(1) path via IndicatorPlugin.updateIncremental()
-        // SMA
-        if (indicators.sma && smaSeriesRef.current) {
-            const subset = data.slice(-20);
-            const average = subset.reduce((acc, d) => acc + d.close, 0) / subset.length;
-            smaSeriesRef.current.update({ time: lastCandle.time, value: average });
-        }
-
-        // EMA — incremental using stored last value ref (true O(1) EMA)
-        if (indicators.ema && emaSeriesRef.current) {
-            if (emaLastValueRef.current === null) {
-                // Need seed — recalculate once
-                const emaData = calculateEMA(data, 20);
-                if (emaData && emaData.length > 0) {
-                    emaLastValueRef.current = emaData[emaData.length - 1].value;
-                    emaSeriesRef.current.setData(emaData);
-                }
-            } else {
-                const smoothing = 2 / (20 + 1);
-                const emaValue = (lastCandle.close - emaLastValueRef.current) * smoothing + emaLastValueRef.current;
-                emaLastValueRef.current = emaValue;
-                // series.update() — never setData() during live/replay
-                emaSeriesRef.current.update({ time: lastCandle.time, value: emaValue });
-            }
-        }
-    }, [indicators]);
+    const updateRealtimeIndicators = useCallback((candle) => {
+        if (!chartRef.current) return;
+        indicatorRegistryRef.current.updateIncremental(candle, chartRef.current);
+    }, []);
 
     const updateIndicators = useCallback((data, indicatorsConfig) => {
-        if (!chartRef.current) return;
+        if (!chartRef.current || !data?.length) return;
+        const registry = indicatorRegistryRef.current;
+        const chart = chartRef.current;
 
-        // If chart is not ready yet (still in initial load), defer indicator series creation
-        // This prevents flicker caused by addSeries() during visibility transitions
-        const canAddSeries = chartReadyRef.current;
-
-
-        // SMA Indicator
-        if (indicatorsConfig.sma) {
-            // Only create series if chart is ready, otherwise just calculate data for later
-            if (!smaSeriesRef.current && canAddSeries) {
-                smaSeriesRef.current = chartRef.current.addSeries(LineSeries, {
-                    color: '#2962FF',
-                    lineWidth: 2,
-                    title: 'SMA 20',
-                    priceLineVisible: false,
-                    lastValueVisible: false
-                });
-            }
-            // Set data if series exists
-            if (smaSeriesRef.current && typeof calculateSMA === 'function') {
-                const smaData = calculateSMA(data, 20);
-                if (smaData && smaData.length > 0) {
-                    smaSeriesRef.current.setData(smaData);
+        for (const [key, enabled] of Object.entries(indicatorsConfig)) {
+            if (enabled) {
+                if (!registry._plugins.has(key)) {
+                    const ctor = INDICATOR_CONSTRUCTORS[key];
+                    if (ctor) registry.add(key, ctor, data, chart);
                 }
-            }
-        } else {
-            if (smaSeriesRef.current) {
-                chartRef.current.removeSeries(smaSeriesRef.current);
-                smaSeriesRef.current = null;
+            } else {
+                registry.remove(key, chart);
             }
         }
-
-        // EMA Indicator
-        if (indicatorsConfig.ema) {
-            // Only create series if chart is ready, otherwise just calculate data for later
-            if (!emaSeriesRef.current && canAddSeries) {
-                emaSeriesRef.current = chartRef.current.addSeries(LineSeries, {
-                    color: '#FF6D00',
-                    lineWidth: 2,
-                    title: 'EMA 20',
-                    priceLineVisible: false,
-                    lastValueVisible: false
-                });
-            }
-            // Set data if series exists
-            if (emaSeriesRef.current && typeof calculateEMA === 'function') {
-                const emaData = calculateEMA(data, 20);
-                if (emaData && emaData.length > 0) {
-                    emaSeriesRef.current.setData(emaData);
-                }
-            }
-        } else {
-            if (emaSeriesRef.current) {
-                chartRef.current.removeSeries(emaSeriesRef.current);
-                emaSeriesRef.current = null;
-            }
-        }
-    }, []); // Empty dependency array - indicators passed as parameter
+    }, []);
 
     // Separate effect for indicators to prevent data reload
     useEffect(() => {
-        // Reset EMA last value when indicators change
-        emaLastValueRef.current = null;
-
         if (dataRef.current.length > 0) {
-            // Update indicators with current data
             try {
                 updateIndicators(dataRef.current, indicators);
-                // Update EMA last value if EMA series exists
-                if (emaSeriesRef.current && dataRef.current.length >= 20) {
-                    const emaData = calculateEMA(dataRef.current, 20);
-                    if (emaData && emaData.length > 0) {
-                        emaLastValueRef.current = emaData[emaData.length - 1].value;
-                        emaSeriesRef.current.setData(emaData);
-                    }
-                }
             } catch (error) {
                 console.error('Error updating indicators:', error);
             }
@@ -1842,7 +1756,7 @@ useImperativeHandle(ref, () => ({
             activeSeries.set(comp.symbol, series);
 
             try {
-                const data = await binanceLiveFeed.loadHistory(comp.symbol, interval, 1000, abortController.signal);
+                const data = await activeFeed.loadHistory(comp.symbol, interval, 1000, abortController.signal);
                 // Check if still valid before setting data
                 if (cancelled || !activeSeries.has(comp.symbol)) return;
                 if (data && data.length > 0) {
@@ -2411,7 +2325,9 @@ useImperativeHandle(ref, () => ({
 useEffect(() => {
   return () => {
     // Clean up global trade marker/line storage on unmount
-    window._tradeMarkers = {};
+    if (import.meta.env.DEV) {
+      window._tradeMarkers = {};
+    }
   };
 }, []);
 
