@@ -240,6 +240,7 @@ const OpenTab = () => {
         <Table>
           <thead>
             <tr>
+              <TH>Order ID</TH>
               <TH>Side</TH>
               <TH>Symbol</TH>
               <TH>Size</TH>
@@ -259,6 +260,7 @@ const OpenTab = () => {
               const pnlPct = live ? live.pnlPct : pos.pnlPercent;
               return (
                 <TR key={pos.id}>
+                  <TD style={{ color: C.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{pos.id}</TD>
                   <TD><SidePill $side={pos.side}>{pos.side.toUpperCase()}</SidePill></TD>
                   <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
                   <TD>{pos.positionSize}</TD>
@@ -289,6 +291,7 @@ const OpenTab = () => {
             })}
             {pendingOrders.map((order) => (
               <TR key={order.id}>
+                <TD style={{ color: C.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{order.id}</TD>
                 <TD>
                   <PendingPill>LIMIT {order.side.toUpperCase()}</PendingPill>
                 </TD>
@@ -356,6 +359,7 @@ const HistoryTab = () => {
         <Table>
           <thead>
             <tr>
+              <TH>Order ID</TH>
               <TH>Side</TH>
               <TH>Symbol</TH>
               <TH>Size / Lev</TH>
@@ -370,6 +374,7 @@ const HistoryTab = () => {
           <tbody>
             {closedPositions.map((pos) => (
               <TR key={pos.id}>
+                <TD style={{ color: C.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{pos.id}</TD>
                 <TD><SidePill $side={pos.side}>{pos.side.toUpperCase()}</SidePill></TD>
                 <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
                 <TD style={{ color: C.textMuted }}>{pos.positionSize} · {pos.leverage}×</TD>

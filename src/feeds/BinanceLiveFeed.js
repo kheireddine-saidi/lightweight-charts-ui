@@ -3,13 +3,28 @@
  *
  * Chart components should never import from services/binance directly.
  * Use this feed as the single bridge to Binance.
+ *
+ * IMPORTANT: subscribe() now delegates to FeedManager to guarantee
+ * per-chart subscription isolation. Multiple charts on the same
+ * symbol+timeframe will share one WebSocket but get independent callbacks.
  */
 import { IDataFeed } from './IDataFeed';
-import { getKlines, subscribeToTicker } from '../services/binance';
+import { getKlines } from '../services/binance';
+import { feedManager } from './FeedManager';
+
+/** Auto-incrementing counter to ensure unique subscription IDs. */
+let _subscribeCounter = 0;
 
 export class BinanceLiveFeed extends IDataFeed {
-  constructor() {
+  /**
+   * @param {string} [feedId] Optional stable feed identity for FeedManager.
+   *   Pass a per-chart ID (e.g. `chart-1`) so the subscription is properly
+   *   isolated and cleaned up.
+   */
+  constructor(feedId) {
     super();
+    /** @type {string} unique ID for this feed instance's subscription */
+    this._feedId = feedId ?? `feed-${++_subscribeCounter}`;
     /** @type {(() => void) | null} */
     this._unsub = null;
   }
@@ -26,16 +41,23 @@ export class BinanceLiveFeed extends IDataFeed {
   }
 
   /**
+   * Subscribe to live candle updates.
+   * Uses FeedManager internally so subscribing one chart never kills another.
+   *
    * @param {string} symbol
    * @param {string} timeframe
    * @param {(candle: import('./IDataFeed').Candle) => void} callback
    * @returns {() => void}
    */
   subscribe(symbol, timeframe, callback) {
-    // Clean up previous subscription if any
+    // Clean up our previous subscription slot in FeedManager
     this.unsubscribe();
-    const ws = subscribeToTicker(symbol.toLowerCase(), timeframe, callback);
-    this._unsub = () => ws.close();
+    this._unsub = feedManager.subscribe({
+      id: this._feedId,
+      symbol,
+      timeframe,
+      callback,
+    });
     return this._unsub;
   }
 
@@ -52,4 +74,5 @@ export class BinanceLiveFeed extends IDataFeed {
 }
 
 /** Singleton for convenience — import this in components. */
-export const binanceLiveFeed = new BinanceLiveFeed();
+export const binanceLiveFeed = new BinanceLiveFeed('default-feed');
+

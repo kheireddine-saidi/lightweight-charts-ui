@@ -13,6 +13,7 @@
 
 import { EventBus, Events } from '../../core/EventBus';
 import { FillModel } from './FillModel';
+import { orderIdGenerator } from '../../core/OrderIdGenerator';
 
 /**
  * @typedef {'long'|'short'} Side
@@ -90,7 +91,8 @@ export class ExecutionEngine {
    * @returns {string} generated position id
    */
   openPosition(data) {
-    const id = crypto.randomUUID();
+    // Use sequential ORD-N IDs for human-readable order identification
+    const id = orderIdGenerator.next();
     const isLimit = data.type === 'limit' || data.type === 'stop';
 
     /** @type {Position} */
