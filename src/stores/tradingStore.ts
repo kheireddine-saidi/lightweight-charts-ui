@@ -16,6 +16,9 @@ import { create } from 'zustand';
 import { EventBus, Events } from '../core/EventBus';
 import { executionEngine } from '../engine/trading/ExecutionEngine';
 
+// Module-level guard: prevents duplicate EventBus subscriptions on HMR reloads.
+let _busSubscribed = false;
+
 export interface Position {
   id: string;
   symbol: string;
@@ -74,14 +77,17 @@ interface TradingState {
 
 export const useTradingStore = create<TradingState>((set, get) => {
   // ── EventBus subscriptions — keep Zustand in sync with ExecutionEngine ──
-
-  EventBus.on(Events.POSITION_OPENED, () => get()._syncFromEngine());
-  EventBus.on(Events.POSITION_CLOSED, () => get()._syncFromEngine());
-  EventBus.on(Events.ORDER_CREATED,   () => get()._syncFromEngine());
-  EventBus.on(Events.ORDER_FILLED,    () => get()._syncFromEngine());
-  EventBus.on(Events.BALANCE_CHANGED, ({ balance, equity }) => {
-    set({ balance, equity });
-  });
+  // Guard against duplicate listeners created by HMR reloads.
+  if (!_busSubscribed) {
+    _busSubscribed = true;
+    EventBus.on(Events.POSITION_OPENED, () => get()._syncFromEngine());
+    EventBus.on(Events.POSITION_CLOSED, () => get()._syncFromEngine());
+    EventBus.on(Events.ORDER_CREATED,   () => get()._syncFromEngine());
+    EventBus.on(Events.ORDER_FILLED,    () => get()._syncFromEngine());
+    EventBus.on(Events.BALANCE_CHANGED, ({ balance, equity }: { balance: number; equity: number }) => {
+      set({ balance, equity });
+    });
+  }
 
   return {
     positions:        [],

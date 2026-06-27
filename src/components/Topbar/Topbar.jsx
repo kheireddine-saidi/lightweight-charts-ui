@@ -5,6 +5,7 @@ import { intervalToSeconds } from '../../utils/timeframes';
 import {
     Plus, Star, Trash2, X
 } from 'lucide-react';
+import IndicatorPanel from '../Indicators/IndicatorPanel';
 
 const Topbar = ({
     symbol, interval, chartType, indicators, favoriteIntervals, customIntervals,
@@ -548,8 +549,7 @@ const Topbar = ({
                                                             className={styles.indicatorDropdown}
                                                             style={{ top: indicatorPos.top, left: indicatorPos.left }}
                                                         >
-                                                            <div className={classNames(styles.dropdownItem, { [styles.active]: indicators.sma })} onClick={(e) => { e.stopPropagation(); onToggleIndicator('sma'); }}>SMA (20)</div>
-                                                            <div className={classNames(styles.dropdownItem, { [styles.active]: indicators.ema })} onClick={(e) => { e.stopPropagation(); onToggleIndicator('ema'); }}>EMA (20)</div>
+                                                            <IndicatorPanel onClose={() => setShowIndicators(false)} />
                                                         </div>
                                                     )}
                                                 </div>

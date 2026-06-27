@@ -123,7 +123,7 @@ const ChartComponent = forwardRef(({
         pause: replayPause,
         stop: replayStop,
         step: replayStep,
-        seek: replaySeeek,
+        seek: replaySeek,
         setSpeed: replaySetSpeed,
     } = useReplayEngine();
 
@@ -470,7 +470,7 @@ useImperativeHandle(ref, () => ({
                 const startIndex = Math.max(0, dataRef.current.length - 1);
                 replayIndexRef.current = startIndex;
                 replayLoad(fullDataRef.current);
-                replaySeeek(startIndex);
+                replaySeek(startIndex);
                 setTimeout(() => {
                     if (updateReplayDataRef.current) {
                         updateReplayDataRef.current(startIndex, false);
@@ -1608,7 +1608,7 @@ useImperativeHandle(ref, () => ({
         for (const [key, enabled] of Object.entries(indicatorsConfig)) {
             if (enabled) {
                 if (!registry._plugins.has(key)) {
-                    const ctor = INDICATOR_CONSTRUCTORS[key];
+                    const ctor = INDICATOR_CONSTRUCTORS.get ? INDICATOR_CONSTRUCTORS.get(key) : INDICATOR_CONSTRUCTORS[key];
                     if (ctor) registry.add(key, ctor, data, chart);
                 }
             } else {
@@ -2031,11 +2031,11 @@ useImperativeHandle(ref, () => ({
             if (isPlayingRef.current) {
                 replayPause();
             }
-            replaySeeek(index);
+            replaySeek(index);
             // The CANDLE event emitted by seek will drive updateReplayData via EventBus
             updateReplayData(index, hideFuture);
         }
-    }, [updateReplayData, replayPause, replaySeeek]);
+    }, [updateReplayData, replayPause, replaySeek]);
 
     // Playback Effect — driven by SimulationClock via EventBus (no setInterval).
     // When replay is active, the clock emits CANDLE events; we subscribe here
@@ -2117,7 +2117,7 @@ useImperativeHandle(ref, () => ({
                 }
 
                 // Update replay to the clicked position
-                replaySeeek(clickedIndex);
+                replaySeek(clickedIndex);
                 replayIndexRef.current = clickedIndex;
                 updateReplayData(clickedIndex, true); // true = hide future candles
 
@@ -2221,7 +2221,7 @@ useImperativeHandle(ref, () => ({
                         rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
                     }
 
-                    replaySeeek(selectedIndex);
+                    replaySeek(selectedIndex);
                     replayIndexRef.current = selectedIndex;
 
                     // Calculate target visible range BEFORE updating data

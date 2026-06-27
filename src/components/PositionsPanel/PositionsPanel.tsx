@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import styled from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
+import TradeJournal from '../Journal/TradeJournal';
 
 /* ─── Design tokens ─── */
 const C = {
@@ -426,7 +427,7 @@ const HistoryTab = () => {
 };
 
 const PositionsPanel: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'open' | 'history'>('open');
+  const [activeTab, setActiveTab] = useState<'open' | 'history' | 'journal'>('open');
   const positions = useTradingStore((s) => s.positions);
   const pendingOrders = useTradingStore((s) => s.pendingOrders);
   const closedPositions = useTradingStore((s) => s.closedPositions);
@@ -444,8 +445,13 @@ const PositionsPanel: React.FC = () => {
           History
           {closedPositions.length > 0 && <Badge>{closedPositions.length}</Badge>}
         </Tab>
+        <Tab $active={activeTab === 'journal'} onClick={() => setActiveTab('journal')}>
+          Journal
+        </Tab>
       </TabBar>
-      {activeTab === 'open' ? <OpenTab /> : <HistoryTab />}
+      {activeTab === 'open' && <OpenTab />}
+      {activeTab === 'history' && <HistoryTab />}
+      {activeTab === 'journal' && <TradeJournal />}
     </Wrap>
   );
 };

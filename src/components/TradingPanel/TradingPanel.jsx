@@ -9,18 +9,18 @@ import { useTradeSetupStore } from '../../stores/tradeSetupStore';
 const C = {
   bg: '#131722',
   surface: '#1e222d',
-  surfaceElevated: '#2a2e39', // Adjusted to match the dark inputs in the screenshot
+  surfaceElevated: '#2a2e39', 
   border: '#2a2e39',
   borderFocus: '#3a5fcd',
   text: '#d1d4dc',
   textMuted: '#787b86',
   textDim: '#555b6e',
-  green: '#0ecb81', // Updated to match screenshot's bright green
+  green: '#0ecb81', 
   greenMuted: 'rgba(14, 203, 129, 0.15)',
-  red: '#f23645', // Updated to match screenshot's bright red
+  red: '#f23645', 
   redMuted: 'rgba(242, 54, 69, 0.15)',
   blue: '#2962ff',
-  orange: '#f0a500', // Used for active tab indicator
+  orange: '#f0a500', 
   orangeMuted: 'rgba(240, 165, 0, 0.12)',
 };
 
@@ -33,6 +33,38 @@ const Panel = styled.div`
   color: ${C.text};
   background: ${C.bg};
   height: 100%;
+`;
+
+const HeaderSection = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 0;
+`;
+
+const AccountRow = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+`;
+
+const InfoLabel = styled.span`
+  color: ${C.textMuted};
+`;
+
+const InfoValue = styled.span`
+  color: ${(p) => p.$color || C.text};
+  font-weight: ${(p) => (p.$bold ? '600' : '500')};
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+`;
+
+const TickerDisplay = styled.div`
+  font-size: 22px;
+  font-weight: 700;
+  color: ${C.text};
+  letter-spacing: -0.5px;
 `;
 
 const TopControls = styled.div`
@@ -79,23 +111,6 @@ const FormContainer = styled.div`
   gap: 16px;
   flex: 1;
   overflow-y: auto;
-`;
-
-const InfoRow = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-`;
-
-const InfoLabel = styled.span`
-  color: ${C.textMuted};
-`;
-
-const InfoValue = styled.span`
-  color: ${(p) => p.$color || C.text};
-  font-weight: ${(p) => (p.$bold ? '600' : '500')};
-  font-variant-numeric: tabular-nums;
 `;
 
 const FieldGroup = styled.div`
@@ -198,22 +213,6 @@ const CostSummary = styled.div`
   border-bottom: 1px solid ${C.border};
 `;
 
-const CheckboxRow = styled.label`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  color: ${C.text};
-  margin-top: 4px;
-  input[type="checkbox"] {
-    accent-color: ${C.orange};
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-  }
-`;
-
 const ActionRow = styled.div`
   display: flex;
   gap: 12px;
@@ -267,15 +266,15 @@ const RiskBadge = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-top: 8px;
 `;
 
-const TradingPanel = ({ currentTime }) => {
+const TradingPanel = ({ currentTime, ticker = "BTC/USDT" }) => {
   // UI State
   const [orderType, setOrderType] = useState('limit');
   const [size, setSize] = useState('');
   const [limitPrice, setLimitPrice] = useState('');
   const [leverage, setLeverage] = useState(20);
-  const [showTPSL, setShowTPSL] = useState(false);
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
 
@@ -294,17 +293,13 @@ const TradingPanel = ({ currentTime }) => {
     setOrderType('limit');
     if (tradeSetup.entryPrice != null) setLimitPrice(String(tradeSetup.entryPrice));
     
-    let hasAdvanced = false;
     if (tradeSetup.stopLoss != null) {
-      hasAdvanced = true;
       setStopLoss(String(tradeSetup.stopLoss));
     }
     if (tradeSetup.takeProfit != null) {
-      hasAdvanced = true;
       setTakeProfit(String(tradeSetup.takeProfit));
     }
     
-    if (hasAdvanced) setShowTPSL(true);
     setPendingZoneId(tradeSetup.zoneId ?? null);
     setFromSetup(true);
     
@@ -314,13 +309,15 @@ const TradingPanel = ({ currentTime }) => {
   // Derived values & Risk Calcs
   const entryPrice = orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : currentPrice;
   const sizeNum = parseFloat(size) || 0;
-  const slNum = showTPSL && stopLoss ? parseFloat(stopLoss) : null;
-  const tpNum = showTPSL && takeProfit ? parseFloat(takeProfit) : null;
+  
+  // SL/TP are always considered if populated
+  const slNum = stopLoss ? parseFloat(stopLoss) : null;
+  const tpNum = takeProfit ? parseFloat(takeProfit) : null;
 
   // Margin required for the position cost summary
   const requiredMargin = entryPrice > 0 && leverage > 0 ? (sizeNum * entryPrice) / leverage : 0;
 
-  // Risk amounts (agnostic of side until placed, calculated as absolute distance)
+  // Risk amounts
   const riskAmount = slNum ? Math.abs(entryPrice - slNum) * sizeNum * leverage : null;
   const rewardAmount = tpNum ? Math.abs(tpNum - entryPrice) * sizeNum * leverage : null;
   const riskPercent = riskAmount ? (riskAmount / balance) * 100 : null;
@@ -331,7 +328,7 @@ const TradingPanel = ({ currentTime }) => {
     riskPercent > 5 ? 'high' :
     riskPercent > 2 ? 'med' : 'low';
 
-  // Submission handler modified to accept side from bottom buttons
+  // Submission handler 
   const handlePlaceOrder = useCallback((sideToPlace) => {
     if (!sizeNum || sizeNum <= 0) return;
 
@@ -342,8 +339,8 @@ const TradingPanel = ({ currentTime }) => {
       limitPrice: orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined,
       positionSize: sizeNum,
       leverage,
-      stopLoss: showTPSL && stopLoss ? parseFloat(stopLoss) : undefined,
-      takeProfit: showTPSL && takeProfit ? parseFloat(takeProfit) : undefined,
+      stopLoss: stopLoss ? parseFloat(stopLoss) : undefined,
+      takeProfit: takeProfit ? parseFloat(takeProfit) : undefined,
       entryTime: currentTime ?? Math.floor(Date.now() / 1000),
     });
 
@@ -355,25 +352,40 @@ const TradingPanel = ({ currentTime }) => {
 
     setStopLoss('');
     setTakeProfit('');
-    setShowTPSL(false);
     setFromSetup(false);
     setPendingZoneId(null);
     if (orderType === 'limit') setLimitPrice('');
-  }, [orderType, sizeNum, limitPrice, leverage, showTPSL, stopLoss, takeProfit, currentTime, currentPrice, openPosition, pendingZoneId]);
+  }, [orderType, sizeNum, limitPrice, leverage, stopLoss, takeProfit, currentTime, currentPrice, openPosition, pendingZoneId]);
 
   return (
     <Panel>
+      {/* 1. Account Info & 4. Ticker Section */}
+      <HeaderSection>
+        <AccountRow>
+          <div>
+            <InfoLabel>Balance</InfoLabel>
+            <InfoValue>{balance.toFixed(2)} USDT</InfoValue>
+          </div>
+          <div>
+            <InfoLabel>Equity</InfoLabel>
+            <InfoValue $color={equity >= balance ? C.green : C.red}>
+              {equity.toFixed(2)} USDT
+            </InfoValue>
+          </div>
+        </AccountRow>
+        <TickerDisplay>{ticker}</TickerDisplay>
+      </HeaderSection>
+
       {/* Top Margin/Leverage Controls */}
       <TopControls>
         <BadgeBtn>Cross</BadgeBtn>
         <BadgeBtn>{leverage} X</BadgeBtn>
       </TopControls>
 
-      {/* Tabs */}
+      {/* 2. Simplified Tabs */}
       <TabsRow>
         <Tab $active={orderType === 'limit'} onClick={() => setOrderType('limit')}>Limit</Tab>
         <Tab $active={orderType === 'market'} onClick={() => setOrderType('market')}>Market</Tab>
-        <Tab>Trigger ▾</Tab>
       </TabsRow>
 
       <FormContainer>
@@ -381,32 +393,19 @@ const TradingPanel = ({ currentTime }) => {
           <SetupBanner>📐 Pre-filled from chart setup — review & place</SetupBanner>
         )}
 
-        {/* Balance & Equity row replaces Available */}
-        <InfoRow>
-          <InfoLabel>Balance</InfoLabel>
-          <InfoValue>{balance.toFixed(2)} USDT</InfoValue>
-        </InfoRow>
-        <InfoRow style={{ marginTop: '-10px' }}>
-          <InfoLabel>Equity</InfoLabel>
-          <InfoValue $color={equity >= balance ? C.green : C.red}>
-            {equity.toFixed(2)} USDT
-          </InfoValue>
-        </InfoRow>
-
-        {/* Price Input */}
+        {/* 5. Live Price for Market Tab */}
         <FieldGroup>
           <FieldLabel>Price</FieldLabel>
           <InputWrapper>
             <StyledInput
               type="number"
               step="0.01"
-              placeholder={orderType === 'market' ? 'Market Price' : currentPrice.toFixed(2)}
-              value={orderType === 'market' ? '' : limitPrice}
+              placeholder={orderType === 'market' ? currentPrice.toFixed(2) : '0.00'}
+              value={orderType === 'market' ? currentPrice.toFixed(2) : limitPrice}
               onChange={(e) => setLimitPrice(e.target.value)}
               disabled={orderType === 'market'}
             />
             <Suffix>USDT</Suffix>
-            {orderType === 'limit' && <SuffixButton>BBO</SuffixButton>}
           </InputWrapper>
         </FieldGroup>
 
@@ -426,7 +425,7 @@ const TradingPanel = ({ currentTime }) => {
           </InputWrapper>
         </FieldGroup>
 
-        {/* Leverage Slider (Integrated into the form to match the screenshot slider's position) */}
+        {/* Leverage Slider */}
         <SliderContainer>
           <input
             type="range"
@@ -447,63 +446,37 @@ const TradingPanel = ({ currentTime }) => {
           <span>Sell {requiredMargin.toFixed(2)} USDT</span>
         </CostSummary>
 
-        {/* Extras Checkboxes */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <CheckboxRow>
-            <input type="checkbox" />
-            Reduce-only
-          </CheckboxRow>
-          <span style={{ fontSize: '12px', color: C.text, cursor: 'pointer' }}>GTC ▾</span>
-        </div>
-
-        {/* TP/SL Toggle Section */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
-          <CheckboxRow>
-            <input 
-              type="checkbox" 
-              checked={showTPSL} 
-              onChange={(e) => setShowTPSL(e.target.checked)} 
+        {/* 3. Always Visible TP/SL Inputs */}
+        <FieldGroup style={{ marginTop: '8px' }}>
+          <FieldLabel>TP trigger price</FieldLabel>
+          <InputWrapper>
+            <StyledInput
+              type="number"
+              step="0.00001"
+              placeholder="Price"
+              value={takeProfit}
+              onChange={(e) => setTakeProfit(e.target.value)}
             />
-            TP/SL
-          </CheckboxRow>
-          <span style={{ fontSize: '12px', color: C.orange, cursor: 'pointer' }}>Advanced</span>
-        </div>
+            <SuffixButton style={{ border: 'none' }}>Last ▾</SuffixButton>
+          </InputWrapper>
+        </FieldGroup>
+        
+        <FieldGroup>
+          <FieldLabel>SL trigger price</FieldLabel>
+          <InputWrapper>
+            <StyledInput
+              type="number"
+              step="0.00001"
+              placeholder="Price"
+              value={stopLoss}
+              onChange={(e) => setStopLoss(e.target.value)}
+            />
+            <SuffixButton style={{ border: 'none' }}>Last ▾</SuffixButton>
+          </InputWrapper>
+        </FieldGroup>
 
-        {/* Conditional TP/SL Inputs */}
-        {showTPSL && (
-          <>
-            <FieldGroup>
-              <FieldLabel>TP trigger price</FieldLabel>
-              <InputWrapper>
-                <StyledInput
-                  type="number"
-                  step="0.00001"
-                  placeholder="Price"
-                  value={takeProfit}
-                  onChange={(e) => setTakeProfit(e.target.value)}
-                />
-                <SuffixButton style={{ border: 'none' }}>Last ▾</SuffixButton>
-              </InputWrapper>
-            </FieldGroup>
-            
-            <FieldGroup>
-              <FieldLabel>SL trigger price</FieldLabel>
-              <InputWrapper>
-                <StyledInput
-                  type="number"
-                  step="0.00001"
-                  placeholder="Price"
-                  value={stopLoss}
-                  onChange={(e) => setStopLoss(e.target.value)}
-                />
-                <SuffixButton style={{ border: 'none' }}>Last ▾</SuffixButton>
-              </InputWrapper>
-            </FieldGroup>
-          </>
-        )}
-
-        {/* Original Risk/Reward Summary Box */}
-        {riskPercent !== null && showTPSL && (
+        {/* Risk/Reward Summary Box */}
+        {riskPercent !== null && (
           <RiskBadge $risk={riskLevel}>
             <span>Risk {riskAmount?.toFixed(2)} ({riskPercent?.toFixed(1)}%)</span>
             {rrRatio !== null && (
