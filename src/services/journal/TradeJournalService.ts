@@ -61,9 +61,10 @@ class TradeJournalServiceClass {
     });
 
     // When a position closes → update the entry
-    this._unsubClosed = EventBus.on(Events.POSITION_CLOSED, ({ position, closePrice, closeTime, pnl }: any) => {
+    this._unsubClosed = EventBus.on(Events.POSITION_CLOSED, ({ position, closePrice, closeTime, pnl, reason }: any) => {
       const pnlPercent = (pnl / (position.entryPrice * position.positionSize)) * 100;
-      const condition = position._closeReason ?? 'manual';
+      // reason comes directly from ExecutionEngine._finaliseClose: 'sl' | 'tp' | 'manual'
+      const condition = reason ?? position.closeReason ?? 'manual';
       tradeJournalRepository.closeEntry(
         position.id,
         closePrice,

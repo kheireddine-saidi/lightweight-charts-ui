@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import styles from './DrawingToolbar.module.css';
 import * as Icons from './ToolIcons';
 
-const DrawingToolbar = ({ activeTool, onToolChange, isDrawingsLocked = false, isDrawingsHidden = false, isTimerVisible = false }) => {
+const DrawingToolbar = ({ activeTool, onToolChange, isMagnetMode = false, isDrawingsLocked = false, isDrawingsHidden = false, isTimerVisible = false }) => {
     // Group definitions
     const toolGroups = [
         {
@@ -294,15 +294,33 @@ const DrawingToolbar = ({ activeTool, onToolChange, isDrawingsLocked = false, is
                     ))}
                 </div>
             )}
+
+            {/* ── Magnet mode toggle ── */}
+            <div className={styles.toolGroupContainer}>
+                <div className={styles.controlWrapper}>
+                    <div
+                        className={`${styles.toolButton} ${isMagnetMode ? styles.active : ''}`}
+                        onClick={() => onToolChange('magnet')}
+                        title={isMagnetMode ? 'Magnet Mode: ON' : 'Magnet Mode: OFF'}
+                    >
+                        <div className={styles.toolIcon}>
+                            <svg viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" width="18" height="18">
+                                <path d="M9 2C6.24 2 4 4.24 4 7v4h2V7c0-1.66 1.34-3 3-3s3 1.34 3 3v4h2V7c0-2.76-2.24-5-5-5z" fill="currentColor"/>
+                                <rect x="4" y="11" width="2" height="3" rx="1" fill="currentColor"/>
+                                <rect x="12" y="11" width="2" height="3" rx="1" fill="currentColor"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     );
 };
 
-
-
 DrawingToolbar.propTypes = {
     activeTool: PropTypes.string,
     onToolChange: PropTypes.func.isRequired,
+    isMagnetMode: PropTypes.bool,
     isDrawingsLocked: PropTypes.bool,
     isDrawingsHidden: PropTypes.bool,
     isTimerVisible: PropTypes.bool

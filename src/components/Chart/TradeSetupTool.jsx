@@ -102,8 +102,28 @@ const TradeSetupTool = ({
   // ── project zone → pixel geometry ────────────────────────────────────────
   const projectZone = useCallback((z) => {
     if (!chartApi || !seriesApi) return null;
-    const x1    = logicalToX(z.entryLogicalX, chartApi);
-    const x2    = logicalToX(z.slLogicalX,    chartApi);
+
+    // Left edge: when order is filled, snap to the fill candle's time position.
+    // This moves the left side of the box to the candle where the fill happened.
+    // The RIGHT edge (slLogicalX) is kept as-is to preserve the original box width.
+    let x1;
+    if ((z.status === 'open' || z.status === 'closed') && z.fillTime != null) {
+      try {
+        const ts  = chartApi.timeScale();
+        const fillX = ts.timeToCoordinate(z.fillTime);
+        x1 = fillX != null ? fillX : logicalToX(z.entryLogicalX, chartApi);
+      } catch {
+        x1 = logicalToX(z.entryLogicalX, chartApi);
+      }
+    } else {
+      x1 = logicalToX(z.entryLogicalX, chartApi);
+    }
+
+    // Right edge always uses slLogicalX so width is preserved after fill-snap.
+    // When the order was first drawn, slLogicalX was set to a logical index further
+    // right. After fill, x1 moves left to the fill candle but x2 stays the same,
+    // keeping the box width identical to what the user drew.
+    const x2     = logicalToX(z.slLogicalX, chartApi);
     const entryY = priceToY(z.entryPrice, seriesApi);
     const slY    = priceToY(z.slPrice,    seriesApi);
     const tpY    = priceToY(z.tpPrice,    seriesApi);
@@ -114,23 +134,37 @@ const TradeSetupTool = ({
 
   // ── apply drag delta to a zone clone ────────────────────────────────────
   const applyDrag = useCallback((zone, handle, dx, dy, g) => {
+    // Closed positions: nothing can be adjusted
+    if (zone.status === 'closed') return zone;
+
     let { entryPrice, slPrice, tpPrice, entryLogicalX, slLogicalX } = zone;
-    const isFilled = zone.status === 'open' || zone.status === 'closed';
+    const isFilled = zone.status === 'open';
 
     if (handle === 'entry_line' && !isFilled) {
       const newY = g.entryY + dy;
       entryPrice = roundPrice(yToPrice(newY, seriesApi)) ?? entryPrice;
-      tpPrice = roundPrice(entryPrice + (entryPrice - slPrice) * RR_RATIO);
+      // Do NOT recompute tpPrice — user has placed it explicitly; just show new R
     } else if (handle === 'sl_line') {
       const newY = g.slY + dy;
       slPrice = roundPrice(yToPrice(newY, seriesApi)) ?? slPrice;
-      tpPrice = roundPrice(entryPrice + (entryPrice - slPrice) * RR_RATIO);
+      // Do NOT recompute tpPrice — ratio is displayed dynamically, not enforced
     } else if (handle === 'tp_line') {
       tpPrice = roundPrice(yToPrice(g.tpY + dy, seriesApi)) ?? tpPrice;
     } else if (handle === 'body') {
-      entryPrice = roundPrice(yToPrice(g.entryY + dy, seriesApi)) ?? entryPrice;
-      slPrice    = roundPrice(yToPrice(g.slY    + dy, seriesApi)) ?? slPrice;
-      tpPrice    = roundPrice(yToPrice(g.tpY    + dy, seriesApi)) ?? tpPrice;
+      if (isFilled) {
+        // Entry is locked after fill — only shift SL and TP vertically.
+        // This keeps the entry price fixed while allowing risk adjustment.
+        slPrice = roundPrice(yToPrice(g.slY + dy, seriesApi)) ?? slPrice;
+        tpPrice = roundPrice(yToPrice(g.tpY + dy, seriesApi)) ?? tpPrice;
+      } else {
+        // Pre-order: shift all three prices together (same delta)
+        entryPrice = roundPrice(yToPrice(g.entryY + dy, seriesApi)) ?? entryPrice;
+        slPrice    = roundPrice(yToPrice(g.slY    + dy, seriesApi)) ?? slPrice;
+        tpPrice    = roundPrice(yToPrice(g.tpY    + dy, seriesApi)) ?? tpPrice;
+        // Also shift the horizontal position of the box (item 7: preserve width)
+        entryLogicalX = xToLogical(g.x1 + dx, chartApi) ?? entryLogicalX;
+        slLogicalX    = xToLogical(g.x2 + dx, chartApi) ?? slLogicalX;
+      }
     } else if (handle === 'left_edge' && !isFilled) {
       entryLogicalX = xToLogical(g.x1 + dx, chartApi) ?? entryLogicalX;
     } else if (handle === 'right_edge') {
@@ -141,11 +175,26 @@ const TradeSetupTool = ({
     return { ...zone, entryPrice, slPrice, tpPrice, entryLogicalX, slLogicalX, side };
   }, [seriesApi, chartApi]);
 
-  // ── sync drag result to trading store ───────────────────────────────────
+  // ── sync drag result to trading store + trading panel ───────────────────
   const syncZoneToOrder = useCallback((zone) => {
-    if (!zone.positionId) return;
+    // Case 1: zone not yet linked to an order (still being drawn / pre-submit)
+    // Push live prices back to TradingPanel via TradeSetupStore so the user
+    // sees current entry/SL/TP reflected in the form while they fine-tune.
+    if (!zone.positionId || zone.status === 'pending_draw') {
+      useTradeSetupStore.getState().setSetup({
+        entryPrice: zone.entryPrice,
+        stopLoss:   zone.slPrice,
+        takeProfit: zone.tpPrice,
+        side:       zone.side,
+        // isReady: false — do NOT retrigger the full setup flow, just update values
+      });
+      return;
+    }
+
     const store = useTradingStore.getState();
+
     if (zone.status === 'pending') {
+      // Order is waiting to fill — update its limit/SL/TP in the engine
       if (typeof store.updatePendingOrder === 'function') {
         store.updatePendingOrder(zone.positionId, {
           limitPrice: zone.entryPrice,
@@ -155,6 +204,7 @@ const TradeSetupTool = ({
         });
       }
     } else if (zone.status === 'open') {
+      // Order is filled — only SL/TP can be changed, entry is locked
       if (typeof store.updatePosition === 'function') {
         store.updatePosition(zone.positionId, {
           stopLoss:   zone.slPrice,
@@ -162,9 +212,10 @@ const TradeSetupTool = ({
         });
       }
     }
+    // status === 'closed' → nothing to sync
   }, []);
 
-  // ── delete selected zone ──────────────────────────────────────────────────
+  // ── delete / close selected zone ──────────────────────────────────────────
   const deleteZone = useCallback((zoneId) => {
     const zone = zones.find(z => z.id === zoneId);
     if (!zone) return;
@@ -172,15 +223,28 @@ const TradeSetupTool = ({
     const store = useTradingStore.getState();
     if (zone.positionId) {
       if (zone.status === 'pending') {
+        // Cancel the pending order — ExecutionEngine will emit ORDER_CANCELLED
+        // which triggers App.jsx to call removeZoneByPositionId
         store.cancelPendingOrder(zone.positionId);
-      } else if (zone.status === 'open') {
-        const mktPrice = useMarketStore.getState().currentPrice ?? zone.entryPrice;
-        store.closePosition(zone.positionId, mktPrice, Math.floor(Date.now() / 1000));
+        // Don't remove zone here — ORDER_CANCELLED event will remove it
+        setSelectedId(null);
+        return;
       }
+      // For open/closed zones, clicking "Delete" is invalid — use Close instead
     }
     onZonesChange(prev => prev.filter(z => z.id !== zoneId));
     setSelectedId(null);
   }, [zones, onZonesChange]);
+
+  // ── close position linked to zone ──────────────────────────────────────────
+  const closeZonePosition = useCallback((zoneId) => {
+    const zone = zones.find(z => z.id === zoneId);
+    if (!zone?.positionId) return;
+    const mktPrice = useMarketStore.getState().currentPrice ?? zone.entryPrice;
+    useTradingStore.getState().closePosition(zone.positionId, mktPrice, Math.floor(Date.now() / 1000));
+    // Zone status will update to 'closed' via POSITION_CLOSED event in App.jsx
+    setSelectedId(null);
+  }, [zones]);
 
   // ── reset on tool deactivate ──────────────────────────────────────────────
   useEffect(() => {
@@ -232,6 +296,8 @@ const TradeSetupTool = ({
         entrySnapRef.current = { logicalX: logX, price };
         phaseRef.current = 'entry_set';
         setPhase('entry_set');
+        // Clear any selection while drawing — we are in tool mode, not selection mode
+        setSelectedId(null);
         // Don't stop propagation — chart still gets click 1 (e.g. to position crosshair)
 
       } else if (phaseRef.current === 'entry_set') {
@@ -251,8 +317,9 @@ const TradeSetupTool = ({
           positionId: null,
         };
 
-        // Remove unvalidated zones before adding new one
-        onZonesChange(prev => [...prev.filter(z => z.positionId != null), newZone]);
+        // Keep all committed (positionId != null) zones; also keep pending_draw
+        // zones that belong to submitted orders. Only remove unvalidated drawings.
+        onZonesChange(prev => [...prev.filter(z => z.positionId != null || z.status !== 'pending_draw'), newZone]);
         setSelectedId(newZone.id);
 
         useTradeSetupStore.getState().setSetup({
@@ -393,18 +460,19 @@ const TradeSetupTool = ({
     const width  = right - left;
     if (width < 1) return null;
 
+    const isClosed  = zone?.status === 'closed';
     const isFilled  = zone?.status === 'open';
     const isPending = zone?.status === 'pending';
-    const entryLocked = isFilled;
+    // Entry line is locked once order is filled or closed — no drag allowed
+    const entryLocked = isFilled || isClosed;
+    // All handles are locked when closed — zone is a permanent historical annotation
+    const allLocked = isClosed || isLive;
     const labelX = right + 6;
     const zoneId = zone?.id;
 
-    // Handle active states for visual highlight
     const isDragging = dragRef.current?.zoneId === zoneId;
     const isActive = isSelected || isDragging;
-
-    // Cursor for the body (whole zone click area)
-    const bodyCursor = isLive ? 'crosshair' : (isSelected ? 'default' : 'pointer');
+    const bodyCursor = isLive ? 'crosshair' : isClosed ? 'default' : (isSelected ? 'default' : 'pointer');
 
     // Make handle areas bigger so they're easier to grab
     const HANDLE_AREA = 12; // half-height of invisible hit rect on each line
@@ -455,7 +523,7 @@ const TradeSetupTool = ({
         {/* ── TP line + drag area ─── */}
         <line x1={left} y1={tpY} x2={right} y2={tpY}
           stroke={TP_COLOR} strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
-        {!isLive && (
+        {!allLocked && (
           <rect x={left} y={tpY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -467,7 +535,7 @@ const TradeSetupTool = ({
           stroke={ENTRY_COLOR} strokeWidth={1.5}
           strokeDasharray={entryLocked ? '4 3' : undefined}
           style={{ pointerEvents: 'none' }} />
-        {!isLive && !entryLocked && (
+        {!allLocked && !entryLocked && (
           <rect x={left} y={entryY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -477,7 +545,7 @@ const TradeSetupTool = ({
         {/* ── SL line + drag area ─── */}
         <line x1={left} y1={slY} x2={right} y2={slY}
           stroke={SL_COLOR} strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
-        {!isLive && (
+        {!allLocked && (
           <rect x={left} y={slY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -485,14 +553,14 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Left edge drag (move entry time) ─── */}
-        {!isLive && !entryLocked && (
+        {!allLocked && !entryLocked && (
           <rect x={left - 6} y={Math.min(tpY, slY)} width={12} height={Math.abs(slY - tpY)}
             fill="transparent"
             style={{ cursor: 'ew-resize', pointerEvents: 'all' }}
             onMouseDown={(e) => startDrag(e, zoneId, 'left_edge')} />
         )}
         {/* ── Right edge drag (move SL time) ─── */}
-        {!isLive && (
+        {!allLocked && (
           <rect x={right - 6} y={Math.min(tpY, slY)} width={12} height={Math.abs(slY - tpY)}
             fill="transparent"
             style={{ cursor: 'ew-resize', pointerEvents: 'all' }}
@@ -500,7 +568,7 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Handle dots on lines (visual only) ─── */}
-        {isSelected && !isLive && [
+        {isSelected && !allLocked && [
           { y: tpY,    col: TP_COLOR,    locked: false },
           { y: entryY, col: ENTRY_COLOR, locked: entryLocked },
           { y: slY,    col: SL_COLOR,    locked: false },
@@ -531,13 +599,19 @@ const TradeSetupTool = ({
         )}
 
         {/* ── R:R labels inside boxes ─── */}
-        {width > 40 && Math.abs(tpY - entryY) > 18 && (
-          <text x={left + width / 2} y={(entryY + tpY) / 2 + 4}
-            fill={TP_COLOR} fontSize={10} fontWeight="700" fontFamily="'Inter',sans-serif"
-            textAnchor="middle" style={{ pointerEvents: 'none', userSelect: 'none' }}>
-            {RR_RATIO}R
-          </text>
-        )}
+        {width > 40 && Math.abs(tpY - entryY) > 18 && (() => {
+          // Compute actual R:R from current prices (not hardcoded 2R)
+          const risk   = Math.abs(zone?.entryPrice - zone?.slPrice) || 1;
+          const reward = Math.abs(zone?.tpPrice   - zone?.entryPrice) || 0;
+          const rr     = (reward / risk).toFixed(1);
+          return (
+            <text x={left + width / 2} y={(entryY + tpY) / 2 + 4}
+              fill={TP_COLOR} fontSize={10} fontWeight="700" fontFamily="'Inter',sans-serif"
+              textAnchor="middle" style={{ pointerEvents: 'none', userSelect: 'none' }}>
+              {rr}R
+            </text>
+          );
+        })()}
         {width > 40 && Math.abs(slY - entryY) > 18 && (
           <text x={left + width / 2} y={(entryY + slY) / 2 + 4}
             fill={SL_COLOR} fontSize={10} fontWeight="700" fontFamily="'Inter',sans-serif"
@@ -547,31 +621,49 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Status badge ─── */}
-        {!isLive && zone?.status && zone.status !== 'pending_draw' && (
-          <text x={left + 4} y={Math.min(tpY, slY) + 12}
-            fill={isPending ? PENDING_FILL : isFilled ? OPEN_FILL : '#aaa'}
-            fontSize={9} fontWeight="700" fontFamily="'Inter',sans-serif"
-            style={{ pointerEvents: 'none', userSelect: 'none' }}>
-            {isPending ? '⏳ PENDING' : isFilled ? '● OPEN' : zone.status.toUpperCase()}
-          </text>
-        )}
-
-        {/* ── Delete button (shown when selected) ─── */}
-        {isSelected && !isLive && (
-          <g
-            style={{ cursor: 'pointer', pointerEvents: 'all' }}
-            onClick={(e) => { e.stopPropagation(); deleteZone(zoneId); }}
-          >
-            <rect x={left + width / 2 - 22} y={Math.min(tpY, slY) - 22}
-              width={44} height={18} rx={4}
-              fill="#f23645" fillOpacity={0.9} />
-            <text x={left + width / 2} y={Math.min(tpY, slY) - 9}
-              fill="#fff" fontSize={10} fontWeight="700" fontFamily="'Inter',sans-serif"
-              textAnchor="middle" style={{ pointerEvents: 'none', userSelect: 'none' }}>
-              🗑 Delete
+        {!isLive && zone?.status && zone.status !== 'pending_draw' && (() => {
+          const statusColor =
+            zone.status === 'pending' ? PENDING_FILL :
+            zone.status === 'open'    ? OPEN_FILL    :
+            zone.status === 'closed'  ? '#787b86'    : '#aaa';
+          const statusLabel =
+            zone.status === 'pending' ? '⏳ PENDING' :
+            zone.status === 'open'    ? '● OPEN'     :
+            zone.status === 'closed'  ? '✓ CLOSED'   : zone.status.toUpperCase();
+          return (
+            <text x={left + 4} y={Math.min(tpY, slY) + 12}
+              fill={statusColor}
+              fontSize={9} fontWeight="700" fontFamily="'Inter',sans-serif"
+              style={{ pointerEvents: 'none', userSelect: 'none' }}>
+              {statusLabel}
             </text>
-          </g>
-        )}
+          );
+        })()}
+
+        {/* ── Action button: Delete (pending_draw/pending) | Close (open) | nothing (closed) ─── */}
+        {isSelected && !isLive && zone?.status !== 'closed' && (() => {
+          const isOpen    = zone?.status === 'open';
+          const isPending = zone?.status === 'pending';
+          const isDraw    = zone?.status === 'pending_draw';
+          const btnColor  = isOpen ? '#f0a500' : '#f23645';
+          const btnLabel  = isOpen ? '✕ Close' : isDraw ? '✕ Cancel' : '✕ Cancel Order';
+          const btnAction = isOpen
+            ? (e) => { e.stopPropagation(); closeZonePosition(zoneId); }
+            : (e) => { e.stopPropagation(); deleteZone(zoneId); };
+
+          return (
+            <g style={{ cursor: 'pointer', pointerEvents: 'all' }} onClick={btnAction}>
+              <rect x={left + width / 2 - 36} y={Math.min(tpY, slY) - 22}
+                width={72} height={18} rx={4}
+                fill={btnColor} fillOpacity={0.9} />
+              <text x={left + width / 2} y={Math.min(tpY, slY) - 9}
+                fill="#fff" fontSize={10} fontWeight="700" fontFamily="'Inter',sans-serif"
+                textAnchor="middle" style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                {btnLabel}
+              </text>
+            </g>
+          );
+        })()}
       </g>
     );
   };

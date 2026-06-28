@@ -13,6 +13,7 @@ import { binanceLiveFeed as binanceLiveFeedSingleton } from '../../feeds/Binance
 import { EventBus, Events } from '../../core/EventBus';
 import { calculateHeikinAshi } from '../../utils/chartUtils';
 import { IndicatorRegistry, INDICATOR_CONSTRUCTORS } from '../../indicators/registry';
+import { executionEngine } from '../../engine/trading/ExecutionEngine';
 import { intervalToSeconds } from '../../utils/timeframes';
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
@@ -435,11 +436,15 @@ useImperativeHandle(ref, () => ({
     updateTradeZone: (zoneId, fields, positionId, newStatus) => {
       setCommittedTradeZones(prev =>
         prev.map(z => {
-          // Match by zone id
+          // Match by zone id (exact)
           if (zoneId && z.id === zoneId) return { ...z, ...(fields ?? {}) };
-          // Match by linked position id (for fill/close sync from polling)
-          if (positionId && z.positionId === positionId && newStatus) {
-            return { ...z, status: newStatus };
+          // Match by linked position id — merge both extra fields and new status
+          if (positionId && z.positionId === positionId) {
+            return {
+              ...z,
+              ...(fields ?? {}),
+              ...(newStatus ? { status: newStatus } : {}),
+            };
           }
           return z;
         })
@@ -447,6 +452,9 @@ useImperativeHandle(ref, () => ({
     },
     removeTradeZone: (zoneId) => {
       setCommittedTradeZones(prev => prev.filter(z => z.id !== zoneId));
+    },
+    removeZoneByPositionId: (positionId) => {
+      setCommittedTradeZones(prev => prev.filter(z => z.positionId !== positionId));
     },
     toggleTimer: () => {
         if (priceScaleTimerRef.current) {
@@ -473,7 +481,8 @@ useImperativeHandle(ref, () => ({
                 replaySeek(startIndex);
                 setTimeout(() => {
                     if (updateReplayDataRef.current) {
-                        updateReplayDataRef.current(startIndex, false);
+                        // hideFeature=true: show only past candles, hide future data
+                        updateReplayDataRef.current(startIndex, true);
                     }
                 }, 0);
             } else {
@@ -1532,8 +1541,17 @@ useImperativeHandle(ref, () => ({
 
                         dataRef.current = currentData;
 
-                        // Emit candle through EventBus so TradingStore/ExecutionEngine can react
-                        EventBus.emit(Events.CANDLE, { candle: normalizedCandle, index: currentData.length - 1 });
+                        // Feed every tick to the execution engine for real-time
+                        // limit order fills and SL/TP checks. This runs on ALL ticks
+                        // (not just closed candles) so fills are immediate and correct.
+                        // Pass normalizedCandle.time (candle open time in seconds) as fillTime
+                        // so zones can snap to the fill candle position via timeToCoordinate.
+                        executionEngine.processTick(normalizedCandle.close, normalizedCandle.time);
+
+                        // Only emit closed candles to EventBus CANDLE for replay/indicator logic.
+                        if (ticker.isClosed) {
+                            EventBus.emit(Events.CANDLE, { candle: normalizedCandle, index: currentData.length - 1 });
+                        }
 
                         const currentChartType = chartTypeRef.current;
                         const transformedRealtimeData = transformData(currentData, currentChartType);

@@ -73,6 +73,7 @@ function App() {
   const [theme, setTheme]               = useState(() => localStorage.getItem('tv_theme') || 'dark');
   const [activeTool, setActiveTool]     = useState(null);
   const [isMagnetMode, setIsMagnetMode] = useState(false);
+  const [editingIndicator, setEditingIndicator] = useState(null); // UserIndicator | null
   const [showDrawingToolbar, setShowDrawingToolbar] = useState(true);
   const [isReplayMode, setIsReplayMode] = useState(false);
   const [isDrawingsLocked, setIsDrawingsLocked] = useState(false);
@@ -302,7 +303,26 @@ function App() {
         ref?.updateTradeZone?.(zoneId, { positionId, status });
       });
     });
-    return () => { unsubDrawn(); unsubLink(); };
+    // When a pending limit order fills → upgrade its zone from 'pending' to 'open'
+    // and pass the fill time so the zone's left edge moves to the fill candle.
+    const unsubFilled = EventBus.on(Events.ORDER_FILLED, ({ order, fillTime }) => {
+      Object.values(chartRefs.current).forEach((ref) => {
+        ref?.updateTradeZone?.(null, { status: 'open', fillTime: fillTime ?? order.filledTime }, order.id, 'open');
+      });
+    });
+    // When an order is cancelled → remove its zone from the chart
+    const unsubCancelled = EventBus.on(Events.ORDER_CANCELLED, ({ id }) => {
+      Object.values(chartRefs.current).forEach((ref) => {
+        ref?.removeZoneByPositionId?.(id);
+      });
+    });
+    // When a position closes (SL/TP/manual) → mark zone as 'closed'
+    const unsubClosed = EventBus.on(Events.POSITION_CLOSED, ({ position }) => {
+      Object.values(chartRefs.current).forEach((ref) => {
+        ref?.updateTradeZone?.(null, null, position.id, 'closed');
+      });
+    });
+    return () => { unsubDrawn(); unsubLink(); unsubFilled(); unsubCancelled(); unsubClosed(); };
   }, []);
 
   const getCurrentTime = useCallback(() => {
@@ -386,8 +406,11 @@ function App() {
             layout={layout}
             onLayoutChange={handleLayoutChange}
             onSaveLayout={handleSaveLayout}
+            onEditIndicatorSource={setEditingIndicator}
           />
         }
+        editingIndicator={editingIndicator}
+        onCloseSourceEditor={() => setEditingIndicator(null)}
         leftToolbar={
           <DrawingToolbar
             activeTool={activeTool}

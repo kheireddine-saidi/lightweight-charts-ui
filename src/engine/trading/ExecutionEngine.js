@@ -1,12 +1,18 @@
 /**
  * ExecutionEngine — processes orders and manages positions.
  *
- * Receives candles from EventBus (CANDLE event) and:
- *  - fills pending limit / stop orders
- *  - checks stop-loss / take-profit on open positions
- *  - calculates unrealised and realised PnL
- *  - manages account balance
- *  - emits ORDER_FILLED, POSITION_OPENED, POSITION_CLOSED, BALANCE_CHANGED
+ * Two execution paths:
+ *
+ * LIVE mode (Binance WebSocket):
+ *   - processTick(price) called on EVERY price tick (partial candles included)
+ *   - Pending orders checked via FillModel.checkTickFill()
+ *   - Open positions SL/TP checked via FillModel.checkSLTPTick()
+ *   - No closed-candle guard needed — tick logic is inherently correct
+ *
+ * REPLAY / BACKTEST mode:
+ *   - _onCandle(candle) called on CLOSED candles only
+ *   - Uses FillModel.checkCandleFill() and FillModel.checkSLTPCandle()
+ *   - Deterministic fill ordering via priceSequence()
  *
  * No React imports. No chart imports.
  */
@@ -15,87 +21,86 @@ import { EventBus, Events } from '../../core/EventBus';
 import { FillModel } from './FillModel';
 import { orderIdGenerator } from '../../core/OrderIdGenerator';
 
-/**
- * @typedef {'long'|'short'} Side
- * @typedef {'market'|'limit'|'stop'} OrderType
- * @typedef {'pending'|'open'|'closed'} PositionStatus
- *
- * @typedef {{
- *   id: string,
- *   symbol: string,
- *   side: Side,
- *   type: OrderType,
- *   entryPrice: number,
- *   limitPrice?: number,
- *   positionSize: number,
- *   leverage: number,
- *   stopLoss?: number,
- *   takeProfit?: number,
- *   status: PositionStatus,
- *   entryTime: number,
- *   filledTime?: number,
- *   pnl: number,
- *   pnlPercent: number,
- *   openedAt: Date,
- * }} Position
- */
-
 export class ExecutionEngine {
-  /**
-   * @param {{
-   *   initialBalance?: number,
-   *   fillMode?: 'conservative'|'optimistic',
-   * }} [options]
-   */
   constructor({ initialBalance = 10_000, fillMode = 'conservative' } = {}) {
-    /** @type {number} */
     this.balance = initialBalance;
-    /** @type {number} */
-    this.equity = initialBalance;
-
-    /** @type {Position[]} */
-    this.positions = [];
-    /** @type {Position[]} */
+    this.equity  = initialBalance;
+    this.positions    = [];
     this.pendingOrders = [];
-    /** @type {(Position & { closePrice: number, closeTime: number, closedAt: Date })[]} */
     this.closedTrades = [];
-
-    this._fillModel = new FillModel(fillMode);
+    this._fillModel   = new FillModel(fillMode);
     this._unsubCandle = null;
+    this._prevPrice   = null;   // for crossover detection in tick mode
+    this._filledThisCandle = new Set();
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
-  /** Attach to EventBus and start processing candles. */
   start() {
+    // Listen to closed candles for replay/backtest fills
     this._unsubCandle = EventBus.on(Events.CANDLE, ({ candle }) => {
       this._onCandle(candle);
     });
   }
 
-  /** Detach from EventBus. */
   stop() {
-    if (this._unsubCandle) {
-      this._unsubCandle();
-      this._unsubCandle = null;
-    }
+    this._unsubCandle?.();
+    this._unsubCandle = null;
   }
 
-  // ─── Order Management ─────────────────────────────────────────────────────
+  // ─── Real-time tick processing (live mode) ────────────────────────────────
 
   /**
-   * Submit a new order.
-   * Market orders are filled immediately at entryPrice.
-   * Limit/stop orders are queued.
-   * @param {Partial<Position>} data
-   * @returns {string} generated position id
+   * Called on every WebSocket price tick (including in-progress candles).
+   * This is the correct path for live order fills — immediate, not end-of-candle.
+   * @param {number} price
+   * @param {number} [tickTime]
    */
+  processTick(price, tickTime) {
+    const now = tickTime ?? Math.floor(Date.now() / 1000);
+    const prev = this._prevPrice;
+
+    // 1. Check pending orders (fills happen immediately when price crosses limit)
+    const stillPending = [];
+    for (const order of this.pendingOrders) {
+      const fillPrice = this._fillModel.checkTickFill(price, prev, order);
+      if (fillPrice !== null) {
+        const filled = { ...order, status: 'open', filledTime: now, entryPrice: fillPrice };
+        this.positions.push(filled);
+        EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: now });
+        EventBus.emit(Events.POSITION_OPENED, { position: filled });
+      } else {
+        stillPending.push(order);
+      }
+    }
+    this.pendingOrders = stillPending;
+
+    // 2. Check SL/TP on open positions (same tick — fill just happened on previous loop)
+    const toClose = [];
+    const remaining = [];
+    for (const pos of this.positions) {
+      const result = this._fillModel.checkSLTPTick(price, pos);
+      if (result) {
+        toClose.push({ pos, closePrice: result.price, reason: result.reason });
+      } else {
+        remaining.push(pos);
+      }
+    }
+    this.positions = remaining;
+    for (const { pos, closePrice, reason } of toClose) {
+      this._finaliseClose(pos, closePrice, now, reason);
+    }
+
+    this._prevPrice = price;
+    this._updateEquity(price);
+  }
+
+  // ─── Order management ─────────────────────────────────────────────────────
+
   openPosition(data) {
-    // Use sequential ORD-N IDs for human-readable order identification
     const id = orderIdGenerator.next();
     const isLimit = data.type === 'limit' || data.type === 'stop';
 
-    /** @type {Position} */
     const pos = {
       symbol: 'BTCUSDT',
       side: 'long',
@@ -112,6 +117,18 @@ export class ExecutionEngine {
     };
 
     if (isLimit) {
+      // Check immediate fill: if limit is at-or-beyond current market, fill now
+      if (this._prevPrice !== null) {
+        const fillPrice = this._fillModel.checkTickFill(this._prevPrice, null, pos);
+        if (fillPrice !== null) {
+          const filled = { ...pos, status: 'open', filledTime: pos.entryTime, entryPrice: fillPrice };
+          this.positions.push(filled);
+          EventBus.emit(Events.ORDER_CREATED,   { order: filled });
+          EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: filled.filledTime });
+          EventBus.emit(Events.POSITION_OPENED, { position: filled });
+          return filled.id;
+        }
+      }
       this.pendingOrders.push(pos);
     } else {
       this.positions.push(pos);
@@ -122,19 +139,11 @@ export class ExecutionEngine {
     return id;
   }
 
-  /**
-   * Cancel a pending order.
-   * @param {string} id
-   */
   cancelOrder(id) {
     this.pendingOrders = this.pendingOrders.filter((o) => o.id !== id);
+    EventBus.emit(Events.ORDER_CANCELLED, { id });
   }
 
-  /**
-   * Update fields on an open position or pending order.
-   * @param {string} id
-   * @param {Partial<Position>} fields
-   */
   updatePosition(id, fields) {
     const idx = this.positions.findIndex((p) => p.id === id);
     if (idx !== -1) {
@@ -147,60 +156,32 @@ export class ExecutionEngine {
     }
   }
 
-  /**
-   * Manually close a position at a specified price.
-   * @param {string} id
-   * @param {number} closePrice
-   * @param {number} [closeTime]
-   */
   closePosition(id, closePrice, closeTime) {
     const idx = this.positions.findIndex((p) => p.id === id);
     if (idx === -1) return;
-    const pos = this.positions[idx];
-    this.positions.splice(idx, 1);
-    this._finaliseClose(pos, closePrice, closeTime ?? Math.floor(Date.now() / 1000));
+    const pos = this.positions.splice(idx, 1)[0];
+    this._finaliseClose(pos, closePrice, closeTime ?? Math.floor(Date.now() / 1000), 'manual');
   }
 
-  // ─── Serialisation (for session snapshots) ────────────────────────────────
+  // ─── Replay/backtest candle processing ────────────────────────────────────
 
-  getSnapshot() {
-    return {
-      balance: this.balance,
-      equity: this.equity,
-      positions: this.positions.map((p) => ({ ...p })),
-      pendingOrders: this.pendingOrders.map((p) => ({ ...p })),
-      closedTrades: this.closedTrades.map((p) => ({ ...p })),
-    };
-  }
-
-  restoreSnapshot(snap) {
-    this.balance = snap.balance ?? this.balance;
-    this.equity = snap.equity ?? this.equity;
-    this.positions = snap.positions ?? [];
-    this.pendingOrders = snap.pendingOrders ?? [];
-    this.closedTrades = snap.closedTrades ?? [];
-  }
-
-  // ─── Internal ─────────────────────────────────────────────────────────────
-
-  /**
-   * Process a new candle: fill pending orders, check SL/TP on open positions.
-   * @param {import('../../feeds/IDataFeed').Candle} candle
-   */
   _onCandle(candle) {
-    this._processPendingOrders(candle);
-    this._checkSLTP(candle);
+    this._filledThisCandle = new Set();
+    this._processPendingOrdersCandle(candle);
+    this._checkSLTPCandle(candle);
     this._updateEquity(candle.close);
+    this._prevPrice = candle.close;
   }
 
-  _processPendingOrders(candle) {
+  _processPendingOrdersCandle(candle) {
     const stillPending = [];
     for (const order of this.pendingOrders) {
-      const fillPrice = this._fillModel.checkLimitFill(candle, order);
+      const fillPrice = this._fillModel.checkCandleFill(candle, order);
       if (fillPrice !== null) {
-        const filled = { ...order, status: 'open', filledTime: candle.time };
+        const filled = { ...order, status: 'open', filledTime: candle.time, entryPrice: fillPrice };
         this.positions.push(filled);
-        EventBus.emit(Events.ORDER_FILLED, { order: filled, fillPrice, fillTime: candle.time });
+        this._filledThisCandle.add(filled.id);
+        EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: candle.time });
         EventBus.emit(Events.POSITION_OPENED, { position: filled });
       } else {
         stillPending.push(order);
@@ -209,40 +190,46 @@ export class ExecutionEngine {
     this.pendingOrders = stillPending;
   }
 
-  _checkSLTP(candle) {
-    const toClose = [];
+  _checkSLTPCandle(candle) {
+    const toClose  = [];
     const remaining = [];
-
     for (const pos of this.positions) {
-      const result = this._fillModel.checkSLTP(candle, pos);
+      // Skip newly filled positions — cannot SL/TP in same candle as fill
+      if (this._filledThisCandle.has(pos.id)) {
+        remaining.push(pos);
+        continue;
+      }
+      const result = this._fillModel.checkSLTPCandle(candle, pos);
       if (result) {
         toClose.push({ pos, closePrice: result.price, reason: result.reason });
       } else {
         remaining.push(pos);
       }
     }
-
     this.positions = remaining;
-    for (const { pos, closePrice } of toClose) {
-      this._finaliseClose(pos, closePrice, candle.time);
+    for (const { pos, closePrice, reason } of toClose) {
+      this._finaliseClose(pos, closePrice, candle.time, reason);
     }
   }
 
-  _finaliseClose(pos, closePrice, closeTime) {
+  // ─── Internal helpers ─────────────────────────────────────────────────────
+
+  _finaliseClose(pos, closePrice, closeTime, reason = 'manual') {
     const pnl = this._calculatePnL(pos, closePrice);
     const closed = {
       ...pos,
       status: 'closed',
       closePrice,
       closeTime,
-      closedAt: new Date(),
+      closedAt:   new Date(),
+      closeReason: reason,        // 'sl' | 'tp' | 'manual'
       pnl,
       pnlPercent: (pnl / (pos.entryPrice * pos.positionSize)) * 100,
     };
     this.closedTrades.push(closed);
     this.balance += pnl;
-    EventBus.emit(Events.POSITION_CLOSED, { position: closed, closePrice, closeTime, pnl });
-    EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, change: pnl });
+    EventBus.emit(Events.POSITION_CLOSED,  { position: closed, closePrice, closeTime, pnl, reason });
+    EventBus.emit(Events.BALANCE_CHANGED,  { balance: this.balance, equity: this.equity, change: pnl });
   }
 
   _updateEquity(currentPrice) {
@@ -253,17 +240,28 @@ export class ExecutionEngine {
     this.equity = this.balance + unrealised;
   }
 
-  /**
-   * @param {Position} pos
-   * @param {number} closePrice
-   * @returns {number}
-   */
   _calculatePnL(pos, closePrice) {
     const direction = pos.side === 'long' ? 1 : -1;
-    const priceDiff = (closePrice - pos.entryPrice) * direction;
-    return priceDiff * pos.positionSize * pos.leverage;
+    return (closePrice - pos.entryPrice) * direction * pos.positionSize * pos.leverage;
+  }
+
+  getSnapshot() {
+    return {
+      balance: this.balance,
+      equity:  this.equity,
+      positions:     this.positions.map((p) => ({ ...p })),
+      pendingOrders: this.pendingOrders.map((p) => ({ ...p })),
+      closedTrades:  this.closedTrades.map((p) => ({ ...p })),
+    };
+  }
+
+  restoreSnapshot(snap) {
+    this.balance       = snap.balance ?? this.balance;
+    this.equity        = snap.equity  ?? this.equity;
+    this.positions     = snap.positions     ?? [];
+    this.pendingOrders = snap.pendingOrders ?? [];
+    this.closedTrades  = snap.closedTrades  ?? [];
   }
 }
 
-/** Application-wide singleton execution engine. */
 export const executionEngine = new ExecutionEngine();

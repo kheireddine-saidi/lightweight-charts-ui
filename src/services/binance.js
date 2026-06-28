@@ -107,6 +107,11 @@ export const subscribeToTicker = (symbol, interval, callback) => {
                     high: parseFloat(kline.h),
                     low: parseFloat(kline.l),
                     close: parseFloat(kline.c),
+                    // kline.x = true means this is a CLOSED/FINAL candle.
+                    // In-progress candles stream every 250 ms with partial OHLCV.
+                    // The execution engine should only process CLOSED candles to
+                    // avoid filling limit orders against temporary intra-candle spikes.
+                    isClosed: kline.x === true,
                 };
                 callback(candle);
             } catch (error) {

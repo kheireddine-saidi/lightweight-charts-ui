@@ -60,6 +60,7 @@ const ChartGrid = ({
                             feed={feedMap.get(chart.id)}
                             symbol={chart.symbol}
                             interval={chart.interval}
+                            magnetMode={1}
                             onAlertsSync={onAlertsSync ? (alerts) => onAlertsSync(chart.id, chart.symbol, alerts) : undefined}
                             onAlertTriggered={onAlertTriggered ? (evt) => onAlertTriggered(chart.id, chart.symbol, evt) : undefined}
                             onReplayModeChange={onReplayModeChange ? (isActive) => onReplayModeChange(chart.id, isActive) : undefined}

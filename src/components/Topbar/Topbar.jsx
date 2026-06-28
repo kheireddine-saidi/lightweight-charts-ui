@@ -15,7 +15,7 @@ const Topbar = ({
     onUndo, onRedo, onMenuClick, theme, onToggleTheme,
     onDownloadImage, onCopyImage, onFullScreen,
     layout, onLayoutChange, onSaveLayout, onAlertClick, onCompareClick, onReplayClick,
-    isReplayMode = false
+    isReplayMode = false, onEditIndicatorSource = null
 }) => {
     const [showIndicators, setShowIndicators] = useState(false);
     const [showTimeframes, setShowTimeframes] = useState(false);
@@ -549,7 +549,7 @@ const Topbar = ({
                                                             className={styles.indicatorDropdown}
                                                             style={{ top: indicatorPos.top, left: indicatorPos.left }}
                                                         >
-                                                            <IndicatorPanel onClose={() => setShowIndicators(false)} />
+                                                            <IndicatorPanel onClose={() => setShowIndicators(false)} onEditSource={onEditIndicatorSource} />
                                                         </div>
                                                     )}
                                                 </div>

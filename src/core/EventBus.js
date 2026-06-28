@@ -34,6 +34,7 @@ export const Events = Object.freeze({
 
   /** A position was closed. payload: { position, closePrice, closeTime, pnl } */
   POSITION_CLOSED: 'POSITION_CLOSED',
+  ORDER_CANCELLED: 'ORDER_CANCELLED',
 
   /** Account balance changed. payload: { balance, equity, change } */
   BALANCE_CHANGED: 'BALANCE_CHANGED',

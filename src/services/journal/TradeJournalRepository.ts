@@ -37,8 +37,9 @@ export interface JournalEntry {
   notes?: string;
 }
 
-const ENTRIES_KEY = 'tj_entries_v1';
-const TAGS_KEY    = 'tj_tags_v1';
+const ENTRIES_KEY        = 'tj_entries_v1';
+const CRITERIA_TAGS_KEY  = 'tj_criteria_tags_v1';
+const TIMEFRAME_TAGS_KEY = 'tj_timeframe_tags_v1';
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -101,26 +102,38 @@ class TradeJournalRepositoryClass {
     saveJSON(ENTRIES_KEY, all);
   }
 
-  // ── Tags ─────────────────────────────────────────────────────────────────
+  // ── Criteria Tags ─────────────────────────────────────────────────────────
 
-  getTags(): JournalTag[] {
-    return loadJSON<JournalTag[]>(TAGS_KEY, []);
+  getCriteriaTags(): JournalTag[] {
+    return loadJSON<JournalTag[]>(CRITERIA_TAGS_KEY, []);
   }
 
-  upsertTag(tag: JournalTag): void {
-    const all = this.getTags();
+  upsertCriteriaTag(tag: JournalTag): void {
+    const all = this.getCriteriaTags();
     const idx = all.findIndex((t) => t.id === tag.id);
-    if (idx >= 0) {
-      all[idx] = tag;
-    } else {
-      all.push(tag);
-    }
-    saveJSON(TAGS_KEY, all);
+    if (idx >= 0) { all[idx] = tag; } else { all.push(tag); }
+    saveJSON(CRITERIA_TAGS_KEY, all);
   }
 
-  deleteTag(id: string): void {
-    const all = this.getTags().filter((t) => t.id !== id);
-    saveJSON(TAGS_KEY, all);
+  deleteCriteriaTag(id: string): void {
+    saveJSON(CRITERIA_TAGS_KEY, this.getCriteriaTags().filter((t) => t.id !== id));
+  }
+
+  // ── Timeframe Tags ────────────────────────────────────────────────────────
+
+  getTimeframeTags(): JournalTag[] {
+    return loadJSON<JournalTag[]>(TIMEFRAME_TAGS_KEY, []);
+  }
+
+  upsertTimeframeTag(tag: JournalTag): void {
+    const all = this.getTimeframeTags();
+    const idx = all.findIndex((t) => t.id === tag.id);
+    if (idx >= 0) { all[idx] = tag; } else { all.push(tag); }
+    saveJSON(TIMEFRAME_TAGS_KEY, all);
+  }
+
+  deleteTimeframeTag(id: string): void {
+    saveJSON(TIMEFRAME_TAGS_KEY, this.getTimeframeTags().filter((t) => t.id !== id));
   }
 }
 

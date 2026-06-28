@@ -1,101 +1,93 @@
 /**
- * FillModel — determines fill prices for orders within a single OHLCV candle.
+ * FillModel — determines fill prices for orders.
  *
- * Because this simulator operates on 1-minute candle granularity (not tick data),
- * we must make an assumption about the intra-candle price path.
+ * Fill logic (correct market semantics):
+ * ─────────────────────────────────────
+ * LONG LIMIT (buy limit):
+ *   - If limitPrice >= currentPrice → fill immediately at currentPrice (above-market buy = market order)
+ *   - If limitPrice < currentPrice  → fill when price ticks DOWN to or below limitPrice
  *
- * Modes
- * ─────
- * conservative  open → high → low → close   (worst-case for longs, SL first)
- * optimistic    open → low → high → close   (best-case for longs, TP first)
+ * SHORT LIMIT (sell limit):
+ *   - If limitPrice <= currentPrice → fill immediately at currentPrice (below-market sell = market order)
+ *   - If limitPrice > currentPrice  → fill when price ticks UP to or above limitPrice
  *
- * For each candle, the fill model determines:
- *  - whether a limit / stop order triggers
- *  - whether an open position's SL or TP is hit
- *  - which price level is reached first
+ * SL/TP use the same real-time tick logic — no need to wait for candle close.
  *
- * No React imports. No chart imports.
+ * checkTickFill() — called on EVERY live price tick (including in-progress candles)
+ * checkSLTPTick() — called on EVERY live price tick for open positions
+ *
+ * For replay candles we synthesise ticks from OHLCV using priceSequence().
  */
-
-/**
- * @typedef {'conservative'|'optimistic'} FillMode
- *
- * @typedef {{ time:number, open:number, high:number, low:number, close:number, volume?:number }} Candle
- *
- * @typedef {{
- *   id: string,
- *   side: 'long'|'short',
- *   type: 'market'|'limit'|'stop',
- *   limitPrice?: number,
- *   stopLoss?: number,
- *   takeProfit?: number,
- *   entryPrice: number,
- * }} Order
- */
-
 export class FillModel {
-  /** @param {FillMode} [mode='conservative'] */
+  /**
+   * @param {'conservative'|'optimistic'} [mode]
+   */
   constructor(mode = 'conservative') {
-    this.setMode(mode);
+    this.mode = mode;
   }
 
-  /**
-   * Change the fill mode at runtime.
-   * @param {FillMode} mode
-   */
   setMode(mode) {
-    if (mode !== 'conservative' && mode !== 'optimistic') {
-      throw new Error(`FillModel: unknown mode "${mode}". Use 'conservative' or 'optimistic'.`);
-    }
-    /** @type {FillMode} */
     this.mode = mode;
   }
 
   /**
-   * Intra-candle price sequence based on the current mode.
-   * Returns the sequence of prices in the order they are assumed to occur.
-   * @param {Candle} candle
+   * Synthetic intra-candle price path for replay/backtesting.
+   * conservative: open → high → low → close  (SL hits before TP for longs)
+   * optimistic:   open → low → high → close
+   * @param {{ open:number, high:number, low:number, close:number }} candle
    * @returns {number[]}
    */
   priceSequence(candle) {
     const { open, high, low, close } = candle;
     return this.mode === 'conservative'
-      ? [open, high, low, close]   // conservative: high before low
-      : [open, low, high, close];  // optimistic:   low before high
+      ? [open, high, low, close]
+      : [open, low, high, close];
   }
 
   /**
-   * Check whether a pending limit / stop order is filled by this candle.
+   * Real-time fill check — called on every price tick.
    *
-   * @param {Candle} candle
-   * @param {Order} order
-   * @returns {number|null}  fill price, or null if not filled
+   * For pending limit/stop orders:
+   *   Long limit  ≥ currentPrice → immediate fill at currentPrice
+   *   Long limit  < currentPrice → fill when currentPrice ticks ≤ limitPrice
+   *   Short limit ≤ currentPrice → immediate fill at currentPrice
+   *   Short limit > currentPrice → fill when currentPrice ticks ≥ limitPrice
+   *
+   * @param {number} currentPrice  live tick price
+   * @param {number} prevPrice     previous tick price (for crossover detection)
+   * @param {{ side:string, type:string, limitPrice?:number, entryPrice:number }} order
+   * @returns {number|null}  fill price or null
    */
-  checkLimitFill(candle, order) {
-    const triggerPrice = order.limitPrice ?? order.entryPrice;
-    if (triggerPrice == null) return null;
+  checkTickFill(currentPrice, prevPrice, order) {
+    const limitPrice = order.limitPrice ?? order.entryPrice;
+    if (limitPrice == null) return null;
 
-    const { low, high } = candle;
+    if (order.type === 'market') {
+      // Market orders are filled immediately when submitted (handled by ExecutionEngine.openPosition)
+      return null;
+    }
 
     if (order.type === 'limit') {
-      // Long limit: fill if candle low touches or goes below limit price
-      if (order.side === 'long' && low <= triggerPrice && high >= candle.open) {
-        return triggerPrice;
-      }
-      // Short limit: fill if candle high touches or exceeds limit price
-      if (order.side === 'short' && high >= triggerPrice) {
-        return triggerPrice;
+      if (order.side === 'long') {
+        // Buy limit: fill at or above market → immediate; otherwise wait for price to drop to limit
+        if (limitPrice >= currentPrice) return currentPrice;
+        // Crossed from above to at/below limit (price ticked down through)
+        if (prevPrice !== null && prevPrice > limitPrice && currentPrice <= limitPrice) return limitPrice;
+      } else {
+        // Sell limit: fill at or below market → immediate; otherwise wait for price to rise to limit
+        if (limitPrice <= currentPrice) return currentPrice;
+        // Crossed from below to at/above limit (price ticked up through)
+        if (prevPrice !== null && prevPrice < limitPrice && currentPrice >= limitPrice) return limitPrice;
       }
     }
 
     if (order.type === 'stop') {
-      // Long stop-entry: fill if candle high reaches stop price
-      if (order.side === 'long' && high >= triggerPrice) {
-        return Math.max(triggerPrice, candle.open); // slippage: open if gapped
-      }
-      // Short stop-entry: fill if candle low reaches stop price
-      if (order.side === 'short' && low <= triggerPrice) {
-        return Math.min(triggerPrice, candle.open);
+      if (order.side === 'long') {
+        // Buy stop: fill when price rises to stop (breakout long)
+        if (currentPrice >= limitPrice) return limitPrice;
+      } else {
+        // Sell stop: fill when price drops to stop (breakout short)
+        if (currentPrice <= limitPrice) return limitPrice;
       }
     }
 
@@ -103,43 +95,61 @@ export class FillModel {
   }
 
   /**
-   * Check whether an open position's SL or TP is hit by this candle.
-   *
-   * Respects the price sequence for the current mode so that "which comes
-   * first" is deterministic.
-   *
-   * @param {Candle} candle
-   * @param {Order} position
-   * @returns {{ price: number, reason: 'sl'|'tp' } | null}
+   * Real-time SL/TP check — called on every price tick.
+   * @param {number} currentPrice
+   * @param {{ side:string, stopLoss?:number, takeProfit?:number }} position
+   * @returns {{ price:number, reason:'sl'|'tp' }|null}
    */
-  checkSLTP(candle, position) {
+  checkSLTPTick(currentPrice, position) {
     const { stopLoss: sl, takeProfit: tp, side } = position;
+
+    if (side === 'long') {
+      if (sl != null && currentPrice <= sl) return { price: sl, reason: 'sl' };
+      if (tp != null && currentPrice >= tp) return { price: tp, reason: 'tp' };
+    } else {
+      if (sl != null && currentPrice >= sl) return { price: sl, reason: 'sl' };
+      if (tp != null && currentPrice <= tp) return { price: tp, reason: 'tp' };
+    }
+
+    return null;
+  }
+
+  /**
+   * Candle-based fill for replay/backtesting — iterates through synthetic
+   * price sequence for deterministic fill ordering.
+   * @param {{ open:number,high:number,low:number,close:number }} candle
+   * @param {{ side:string, type:string, limitPrice?:number, entryPrice:number }} order
+   * @returns {number|null}
+   */
+  checkCandleFill(candle, order) {
+    const prices = this.priceSequence(candle);
+    let prev = null;
+    for (const p of prices) {
+      const fill = this.checkTickFill(p, prev, order);
+      if (fill !== null) return fill;
+      prev = p;
+    }
+    return null;
+  }
+
+  /**
+   * Candle-based SL/TP for replay/backtesting.
+   * @param {{ open:number,high:number,low:number,close:number }} candle
+   * @param {{ side:string, stopLoss?:number, takeProfit?:number }} position
+   * @returns {{ price:number, reason:'sl'|'tp' }|null}
+   */
+  checkSLTPCandle(candle, position) {
+    const { sl, tp } = { sl: position.stopLoss, tp: position.takeProfit };
     if (!sl && !tp) return null;
 
-    const sequence = this.priceSequence(candle);
-
-    for (const price of sequence) {
-      // Stop-loss check
-      if (sl != null) {
-        if (side === 'long' && price <= sl) return { price: sl, reason: 'sl' };
-        if (side === 'short' && price >= sl) return { price: sl, reason: 'sl' };
-      }
-      // Take-profit check
-      if (tp != null) {
-        if (side === 'long' && price >= tp) return { price: tp, reason: 'tp' };
-        if (side === 'short' && price <= tp) return { price: tp, reason: 'tp' };
-      }
+    for (const price of this.priceSequence(candle)) {
+      const result = this.checkSLTPTick(price, position);
+      if (result) return result;
     }
-
     return null;
   }
 
-  /**
-   * Determine the fill price for a market order (always the candle open).
-   * In live mode the actual WebSocket price is used instead.
-   * @param {Candle} candle
-   * @returns {number}
-   */
+  /** Market fill price — candle open (replay) or live price */
   marketFill(candle) {
     return candle.open;
   }
