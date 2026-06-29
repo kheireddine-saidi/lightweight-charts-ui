@@ -25,6 +25,7 @@ export class ExecutionEngine {
   constructor({ initialBalance = 10_000, fillMode = 'conservative' } = {}) {
     this.balance = initialBalance;
     this.equity  = initialBalance;
+    this.reservedMargin = 0;   // margin locked in open positions + pending orders
     this.positions    = [];
     this.pendingOrders = [];
     this.closedTrades = [];
@@ -123,15 +124,19 @@ export class ExecutionEngine {
         if (fillPrice !== null) {
           const filled = { ...pos, status: 'open', filledTime: pos.entryTime, entryPrice: fillPrice };
           this.positions.push(filled);
+          this.reservedMargin += (filled.requiredMargin ?? 0);
           EventBus.emit(Events.ORDER_CREATED,   { order: filled });
           EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: filled.filledTime });
           EventBus.emit(Events.POSITION_OPENED, { position: filled });
+          EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
           return filled.id;
         }
       }
       this.pendingOrders.push(pos);
+      this.reservedMargin += (pos.requiredMargin ?? 0);
     } else {
       this.positions.push(pos);
+      this.reservedMargin += (pos.requiredMargin ?? 0);
       EventBus.emit(Events.POSITION_OPENED, { position: pos });
     }
 
@@ -140,8 +145,11 @@ export class ExecutionEngine {
   }
 
   cancelOrder(id) {
+    const order = this.pendingOrders.find(o => o.id === id);
+    if (order) this.reservedMargin = Math.max(0, this.reservedMargin - (order.requiredMargin ?? 0));
     this.pendingOrders = this.pendingOrders.filter((o) => o.id !== id);
     EventBus.emit(Events.ORDER_CANCELLED, { id });
+    EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
   }
 
   updatePosition(id, fields) {
@@ -216,20 +224,22 @@ export class ExecutionEngine {
 
   _finaliseClose(pos, closePrice, closeTime, reason = 'manual') {
     const pnl = this._calculatePnL(pos, closePrice);
+    // Release margin and credit PnL to balance
+    this.reservedMargin = Math.max(0, this.reservedMargin - (pos.requiredMargin ?? 0));
+    this.balance += pnl;
     const closed = {
       ...pos,
       status: 'closed',
       closePrice,
       closeTime,
       closedAt:   new Date(),
-      closeReason: reason,        // 'sl' | 'tp' | 'manual'
+      closeReason: reason,
       pnl,
       pnlPercent: (pnl / (pos.entryPrice * pos.positionSize)) * 100,
     };
     this.closedTrades.push(closed);
-    this.balance += pnl;
     EventBus.emit(Events.POSITION_CLOSED,  { position: closed, closePrice, closeTime, pnl, reason });
-    EventBus.emit(Events.BALANCE_CHANGED,  { balance: this.balance, equity: this.equity, change: pnl });
+    EventBus.emit(Events.BALANCE_CHANGED,  { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin, change: pnl });
   }
 
   _updateEquity(currentPrice) {

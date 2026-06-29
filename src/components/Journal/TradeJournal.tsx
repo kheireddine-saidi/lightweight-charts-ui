@@ -175,6 +175,20 @@ const DEFAULT_WIDTHS: Record<string, number> = {
   exitCond:70, rr:58, risk:58, criteria:160, timeframe:160, mistake:140, notes:200,
 };
 
+const COL_WIDTHS_KEY = 'tj_col_widths_v1';
+
+function loadColWidths(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(COL_WIDTHS_KEY);
+    if (!raw) return DEFAULT_WIDTHS;
+    return { ...DEFAULT_WIDTHS, ...JSON.parse(raw) };
+  } catch { return DEFAULT_WIDTHS; }
+}
+
+function saveColWidths(w: Record<string, number>) {
+  try { localStorage.setItem(COL_WIDTHS_KEY, JSON.stringify(w)); } catch {}
+}
+
 type ColKey = keyof typeof DEFAULT_WIDTHS;
 const COLS: { key:ColKey; label:string }[] = [
   {key:'orderId',label:'Order ID'},{key:'side',label:'Side'},{key:'ticker',label:'Ticker'},
@@ -260,7 +274,7 @@ const TradeJournal: React.FC = () => {
   const [tagTab, setTagTab] = useState<'criteria'|'timeframe'>('criteria');
   const [newLabel, setNewLabel] = useState('');
   const [newColor, setNewColor] = useState(PRESETS[0]);
-  const [colWidths, setColWidths] = useState<Record<string,number>>(DEFAULT_WIDTHS);
+  const [colWidths, setColWidths] = useState<Record<string,number>>(loadColWidths);
   const [edits, setEdits] = useState<Record<string,Partial<JournalEntry>>>({});
 
   const reload = useCallback(()=>{
@@ -285,7 +299,11 @@ const TradeJournal: React.FC = () => {
     const startW = colWidths[key];
     const onMove = (ev:MouseEvent) => {
       const next = Math.max(40, startW + ev.clientX - startX);
-      setColWidths(p=>({...p,[key]:next}));
+      setColWidths(p => {
+        const updated = {...p, [key]: next};
+        saveColWidths(updated);
+        return updated;
+      });
     };
     const onUp = () => {
       document.body.classList.remove('tj-dragging');
@@ -369,8 +387,15 @@ const TradeJournal: React.FC = () => {
               const criteriaSnaps = ((e as any).entryCriteriaTags as any[])?.filter(Boolean) ?? [];
               const timeframeSnaps = ((e as any).entryTimeframeTags as any[])?.filter(Boolean) ?? [];
 
+              const handleRowClick = () => {
+                // Scroll the active chart to the candle where the order was filled
+                if (e.fillDatetime) {
+                  EventBus.emit(Events.SCROLL_TO_TIME, { time: e.fillDatetime });
+                }
+              };
+
               return (
-                <TR key={e.id}>
+                <TR key={e.id} onClick={handleRowClick} style={{cursor:'pointer'}}>
                   <TD style={{width:colWidths.orderId}}><span style={{fontFamily:'monospace',fontSize:10,color:C.muted}}>{e.orderId}</span></TD>
                   <TD style={{width:colWidths.side}}><SidePill $s={e.side}>{e.side.toUpperCase()}</SidePill></TD>
                   <TD style={{width:colWidths.ticker,fontWeight:500}}>{e.ticker}</TD>

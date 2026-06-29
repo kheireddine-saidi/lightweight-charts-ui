@@ -14,6 +14,8 @@ import { EventBus, Events } from '../../core/EventBus';
 import { calculateHeikinAshi } from '../../utils/chartUtils';
 import { IndicatorRegistry, INDICATOR_CONSTRUCTORS } from '../../indicators/registry';
 import { executionEngine } from '../../engine/trading/ExecutionEngine';
+import { useIndicatorStore } from '../../stores/indicatorStore';
+import { PineTSRuntime } from '../../indicators/PineTSRuntime';
 import { intervalToSeconds } from '../../utils/timeframes';
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
@@ -197,6 +199,19 @@ useImperativeHandle(ref, () => ({
     },
     redo: () => {
         if (lineToolManagerRef.current) lineToolManagerRef.current.redo();
+    },
+    // Scroll chart so the candle at `time` (unix seconds) is centered in viewport.
+    scrollToTime: (time) => {
+        if (!chartRef.current) return;
+        try {
+            const ts = chartRef.current.timeScale();
+            // Get current visible range width to keep context around the target candle
+            const vr = ts.getVisibleRange();
+            const halfSpan = vr ? Math.round((vr.to - vr.from) / 2) : 50 * 60;
+            ts.setVisibleRange({ from: time - halfSpan, to: time + halfSpan });
+        } catch (e) {
+            console.warn('[scrollToTime]', e);
+        }
     },
     getLineToolManager: () => lineToolManagerRef.current,
     clearTools: () => {
@@ -1478,8 +1493,12 @@ useImperativeHandle(ref, () => ({
                     timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
 
                     // Mark chart as ready immediately after data is set
-                    // This allows indicators to be added without delay
                     chartReadyRef.current = true;
+
+                    // Trigger PineTS re-run with fresh data
+                    if (runPineIndicatorsRef.current) {
+                        runPineIndicatorsRef.current(data);
+                    }
 
                     // Initialize the candle countdown timer
                     const intervalSeconds = intervalToSeconds(interval);
@@ -1645,6 +1664,68 @@ useImperativeHandle(ref, () => ({
             }
         }
     }, [indicators, updateIndicators]);
+
+    // ── PineTS user indicator effect ──────────────────────────────────────
+    const userIndicators = useIndicatorStore(s => s.indicators);
+    const pineSeriesRef = useRef({});
+    const pineRuntimeRef = useRef(null);
+    const runPineIndicatorsRef = useRef(null);
+
+    const runPineIndicators = useCallback(async (data) => {
+        const chart = chartRef.current;
+        if (!chart || !data?.length) return;
+
+        if (!pineRuntimeRef.current) {
+            pineRuntimeRef.current = new PineTSRuntime(data);
+        } else {
+            pineRuntimeRef.current.updateCandles(data);
+        }
+
+        const enabledInds = useIndicatorStore.getState().indicators.filter(ind => ind.enabled);
+        const currentIds  = new Set(enabledInds.map(i => i.id));
+
+        for (const [id, seriesList] of Object.entries(pineSeriesRef.current)) {
+            if (!currentIds.has(id)) {
+                for (const s of seriesList) { try { chart.removeSeries(s); } catch {} }
+                delete pineSeriesRef.current[id];
+            }
+        }
+
+        for (const ind of enabledInds) {
+            const result = await pineRuntimeRef.current.run(ind.source, ind.params);
+            if (!chartRef.current) return;
+            if (result.error) { console.warn(`[PineTS] ${ind.title}:`, result.error); continue; }
+
+            const oldSeries = pineSeriesRef.current[ind.id] ?? [];
+            for (const s of oldSeries) { try { chartRef.current.removeSeries(s); } catch {} }
+
+            const newSeries = [];
+            for (const seriesOut of result.series) {
+                if (!seriesOut.data.length) continue;
+                try {
+                    // LWC v5 API: addSeries(SeriesClass, options) — NOT addSeries({type:...})
+                    const ls = chartRef.current.addSeries(LineSeries, {
+                        lineWidth: seriesOut.lineWidth ?? 1,
+                        color: seriesOut.color,
+                        title: seriesOut.name,
+                        priceScaleId: 'right',
+                        lastValueVisible: true,
+                        priceLineVisible: false,
+                    });
+                    ls.setData(seriesOut.data);
+                    newSeries.push(ls);
+                } catch (e) { console.warn('[PineTS] series add error:', e); }
+            }
+            pineSeriesRef.current[ind.id] = newSeries;
+        }
+    }, []);
+
+    useEffect(() => { runPineIndicatorsRef.current = runPineIndicators; }, [runPineIndicators]);
+
+    useEffect(() => {
+        runPineIndicators(dataRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [userIndicators, symbol, interval, runPineIndicators]);
 
     // Handle Magnet Mode
     useEffect(() => {

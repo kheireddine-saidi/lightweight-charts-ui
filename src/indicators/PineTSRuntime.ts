@@ -1,19 +1,23 @@
 /**
- * PineTSRuntime — wraps pinets to run Pine Script indicators
- * against the chart's candle data and returns plot series values.
+ * PineTSRuntime — executes Pine Script indicators using the pinets library.
  *
- * Usage:
- *   const rt = new PineTSRuntime(candles, symbol, interval);
- *   const plots = await rt.run(source);
- *   // plots: Record<name, number[]>  aligned 1:1 with candles
+ * pinets plot output format (per series):
+ *   ctx.plots['SeriesName'] = {
+ *     data: [{title, time, value, options:{color}}, ...],  // one per candle
+ *     options: {...},
+ *     title: 'SeriesName'
+ *   }
+ *
+ * We convert this to LightweightCharts-compatible LineSeries data:
+ *   [{time, value}]  with nulls for na values.
  */
 import { PineTS, Indicator } from 'pinets';
-import type { Context } from 'pinets';
 
 export interface PineSeriesOutput {
   name: string;
   color: string;
-  data: (number | null)[];  // one value per candle, null = na
+  lineWidth: number;
+  data: { time: number; value: number }[];   // sparse — only non-null points
 }
 
 export interface PineRunResult {
@@ -21,59 +25,91 @@ export interface PineRunResult {
   error?: string;
 }
 
-/** Convert our OHLCV candle array to the format pinets accepts as raw data */
-function candlesToPineData(candles: {time:number;open:number;high:number;low:number;close:number;volume?:number}[]) {
+/** Candle shape accepted by pinets */
+interface PineCandle {
+  openTime: number;
+  closeTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+function toPineCandles(
+  candles: { time: number; open: number; high: number; low: number; close: number; volume?: number }[]
+): PineCandle[] {
   return candles.map(c => ({
     openTime:  c.time,
-    closeTime: c.time + 59,
-    open:  c.open,
-    high:  c.high,
-    low:   c.low,
-    close: c.close,
+    closeTime: c.time + 59,   // assume 1m bars; pinets uses closeTime for alignment
+    open:   c.open,
+    high:   c.high,
+    low:    c.low,
+    close:  c.close,
     volume: c.volume ?? 0,
   }));
 }
 
-/** Extract plot series from a pinets Context result */
-function extractPlots(context: Context, candleCount: number): PineSeriesOutput[] {
-  const plots = context.plots ?? {};
-  return Object.entries(plots).map(([name, series]: [string, any]) => {
-    const data = series?.data ?? series ?? [];
-    // Pad front with nulls if shorter than candle array
-    const padded: (number|null)[] = Array(Math.max(0, candleCount - data.length)).fill(null);
-    for (const v of data) {
-      padded.push(v == null || isNaN(v) ? null : Number(v));
+/** Internal plot key names that aren't user series */
+const SKIP_KEYS = new Set(['__labels__','__lines__','__boxes__','__linefills__','__polylines__','__tables__']);
+
+function extractSeries(ctx: any): PineSeriesOutput[] {
+  const plots = ctx.plots ?? {};
+  const out: PineSeriesOutput[] = [];
+
+  for (const [key, plot] of Object.entries(plots) as [string, any][]) {
+    if (SKIP_KEYS.has(key)) continue;
+    if (!plot?.data || !Array.isArray(plot.data)) continue;
+
+    // Collect non-null data points
+    const data: { time: number; value: number }[] = [];
+    for (const pt of plot.data) {
+      if (pt?.value != null && !isNaN(pt.value)) {
+        data.push({ time: pt.time, value: Number(pt.value) });
+      }
     }
-    return {
-      name,
-      color: series?.color ?? '#2962ff',
-      data: padded.slice(-candleCount),
-    };
-  });
+
+    // Color: from first point's options, fallback to plot-level options
+    const color =
+      plot.data[0]?.options?.color ??
+      plot.options?.color ??
+      '#2962ff';
+
+    out.push({
+      name:      plot.title ?? key,
+      color,
+      lineWidth: plot.options?.lineWidth ?? 1,
+      data,
+    });
+  }
+
+  return out;
 }
 
 export class PineTSRuntime {
-  private _candles: any[];
-  private _pineData: any[];
+  private _pineCandles: PineCandle[] = [];
 
-  constructor(candles: {time:number;open:number;high:number;low:number;close:number;volume?:number}[]) {
-    this._candles = candles;
-    this._pineData = candlesToPineData(candles);
+  constructor(
+    candles: { time: number; open: number; high: number; low: number; close: number; volume?: number }[]
+  ) {
+    this._pineCandles = toPineCandles(candles);
   }
 
-  updateCandles(candles: {time:number;open:number;high:number;low:number;close:number;volume?:number}[]) {
-    this._candles = candles;
-    this._pineData = candlesToPineData(candles);
+  updateCandles(
+    candles: { time: number; open: number; high: number; low: number; close: number; volume?: number }[]
+  ) {
+    this._pineCandles = toPineCandles(candles);
   }
 
-  async run(source: string, inputs?: Record<string, unknown>): Promise<PineRunResult> {
+  async run(source: string, inputs: Record<string, unknown> = {}): Promise<PineRunResult> {
     try {
-      const pine = new PineTS(this._pineData);
-      const indicator = new Indicator(source, inputs ?? {});
-      const context: Context = await pine.run(indicator);
-      const series = extractPlots(context, this._candles.length);
+      const pine = new PineTS(this._pineCandles);
+      const indicator = new Indicator(source, inputs);
+      const ctx = await pine.run(indicator);
+      const series = extractSeries(ctx);
       return { series };
     } catch (err: any) {
+      console.error('[PineTSRuntime] error:', err);
       return { series: [], error: String(err?.message ?? err) };
     }
   }

@@ -316,13 +316,18 @@ function App() {
         ref?.removeZoneByPositionId?.(id);
       });
     });
-    // When a position closes (SL/TP/manual) → mark zone as 'closed'
+    // When position closes → mark zone closed
     const unsubClosed = EventBus.on(Events.POSITION_CLOSED, ({ position }) => {
       Object.values(chartRefs.current).forEach((ref) => {
         ref?.updateTradeZone?.(null, null, position.id, 'closed');
       });
     });
-    return () => { unsubDrawn(); unsubLink(); unsubFilled(); unsubCancelled(); unsubClosed(); };
+    // Journal row click → scroll the active chart to the fill candle
+    const unsubScroll = EventBus.on(Events.SCROLL_TO_TIME, ({ time }) => {
+      const activeId = Object.keys(chartRefs.current)[0];
+      if (activeId) chartRefs.current[activeId]?.scrollToTime?.(time);
+    });
+    return () => { unsubDrawn(); unsubLink(); unsubFilled(); unsubCancelled(); unsubClosed(); unsubScroll(); };
   }, []);
 
   const getCurrentTime = useCallback(() => {

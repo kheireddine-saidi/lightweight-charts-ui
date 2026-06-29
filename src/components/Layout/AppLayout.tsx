@@ -68,7 +68,8 @@ const TopRow = styled.div`
   display: flex;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
 `;
 
 const ChartArea = styled.div`
@@ -91,7 +92,8 @@ const TopbarWrapper = styled.div`
   position: absolute;
   top: 0; left: 0; right: 0;
   height: 48px;
-  z-index: 10;
+  /* z-index must exceed LWC's internal max (49) AND any other overlays */
+  z-index: 1000;
   background: #1e222d;
   border-bottom: 1px solid #2a2e39;
 `;

@@ -440,10 +440,16 @@ const TradeSetupTool = ({
   }, [active, selectedId, containerRef]);
 
   // ── click a zone to select / deselect it ─────────────────────────────────
+  // Selection only works when we are in cursor mode (active=false, phase=idle).
+  // When a drawing tool is active, clicks must fall through to the canvas for drawing.
   const handleZoneClick = useCallback((e, zoneId) => {
+    if (active || phaseRef.current !== 'idle') {
+      // We're in drawing mode — do NOT select the zone; let the draw handler fire
+      return;
+    }
     e.stopPropagation();
     setSelectedId(prev => prev === zoneId ? null : zoneId);
-  }, []);
+  }, [active]);
 
   // ─── Zone SVG rendering ───────────────────────────────────────────────────
   const SL_COLOR    = '#f23645';
@@ -479,25 +485,31 @@ const TradeSetupTool = ({
 
     return (
       <g>
-        {/* ── Invisible wide body click area (pointer-events:all) ─────── */}
-        {!isLive && (
+        {/* ── Invisible wide body click area ─────── */}
+        {/* Filled zones: click-to-select only (no drag). Pre-order zones: full drag. Closed: click only. */}
+        {!isLive && !isFilled && !isClosed && (
           <rect
             x={left} y={Math.min(tpY, slY)}
             width={width} height={Math.abs(slY - tpY)}
             fill="transparent"
-            style={{ cursor: bodyCursor, pointerEvents: 'all' }}
+            style={{ cursor: 'pointer', pointerEvents: 'all' }}
             onClick={(e) => handleZoneClick(e, zoneId)}
             onMouseDown={(e) => {
-              // Only treat as body drag if not near a line handle
-              const rect = e.currentTarget.getBoundingClientRect();
               const ly = e.clientY - containerRef.current.getBoundingClientRect().top;
               const nearEntry = Math.abs(ly - entryY) <= LINE_HIT;
               const nearSL    = Math.abs(ly - slY)    <= LINE_HIT;
               const nearTP    = Math.abs(ly - tpY)    <= LINE_HIT;
-              if (!nearEntry && !nearSL && !nearTP) {
-                startDrag(e, zoneId, 'body');
-              }
+              if (!nearEntry && !nearSL && !nearTP) startDrag(e, zoneId, 'body');
             }}
+          />
+        )}
+        {!isLive && (isFilled || isClosed) && (
+          <rect
+            x={left} y={Math.min(tpY, slY)}
+            width={width} height={Math.abs(slY - tpY)}
+            fill="transparent"
+            style={{ cursor: 'default', pointerEvents: 'all' }}
+            onClick={(e) => handleZoneClick(e, zoneId)}
           />
         )}
 
@@ -523,7 +535,7 @@ const TradeSetupTool = ({
         {/* ── TP line + drag area ─── */}
         <line x1={left} y1={tpY} x2={right} y2={tpY}
           stroke={TP_COLOR} strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
-        {!allLocked && (
+        {!allLocked && !active && (
           <rect x={left} y={tpY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -535,7 +547,7 @@ const TradeSetupTool = ({
           stroke={ENTRY_COLOR} strokeWidth={1.5}
           strokeDasharray={entryLocked ? '4 3' : undefined}
           style={{ pointerEvents: 'none' }} />
-        {!allLocked && !entryLocked && (
+        {!allLocked && !entryLocked && !active && (
           <rect x={left} y={entryY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -545,7 +557,7 @@ const TradeSetupTool = ({
         {/* ── SL line + drag area ─── */}
         <line x1={left} y1={slY} x2={right} y2={slY}
           stroke={SL_COLOR} strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
-        {!allLocked && (
+        {!allLocked && !active && (
           <rect x={left} y={slY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -553,14 +565,14 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Left edge drag (move entry time) ─── */}
-        {!allLocked && !entryLocked && (
+        {!allLocked && !entryLocked && !active && (
           <rect x={left - 6} y={Math.min(tpY, slY)} width={12} height={Math.abs(slY - tpY)}
             fill="transparent"
             style={{ cursor: 'ew-resize', pointerEvents: 'all' }}
             onMouseDown={(e) => startDrag(e, zoneId, 'left_edge')} />
         )}
         {/* ── Right edge drag (move SL time) ─── */}
-        {!allLocked && (
+        {!allLocked && !active && (
           <rect x={right - 6} y={Math.min(tpY, slY)} width={12} height={Math.abs(slY - tpY)}
             fill="transparent"
             style={{ cursor: 'ew-resize', pointerEvents: 'all' }}
@@ -568,7 +580,7 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Handle dots on lines (visual only) ─── */}
-        {isSelected && !allLocked && [
+        {isSelected && !allLocked && !active && [
           { y: tpY,    col: TP_COLOR,    locked: false },
           { y: entryY, col: ENTRY_COLOR, locked: entryLocked },
           { y: slY,    col: SL_COLOR,    locked: false },
