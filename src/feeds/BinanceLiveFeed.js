@@ -41,6 +41,15 @@ export class BinanceLiveFeed extends IDataFeed {
   }
 
   /**
+   * Load older candles ending before the given timestamp (unix ms).
+   * Used for infinite scroll — loads the page of candles that precede
+   * the oldest candle currently displayed.
+   */
+  async loadHistoryBefore(symbol, timeframe, endTimeMs, limit = 500, signal) {
+    return getKlines(symbol, timeframe, limit, signal, endTimeMs);
+  }
+
+  /**
    * Subscribe to live candle updates.
    * Uses FeedManager internally so subscribing one chart never kills another.
    *

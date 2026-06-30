@@ -237,8 +237,8 @@ const TagDropdown: React.FC<TagDropProps> = ({selectedSnapshots, allTags, onChan
 
   return (
     <BadgeRow>
-      {selectedSnapshots.map(s=>(
-        <Badge key={s.id} $color={s.color} onClick={openDrop}>{s.label}</Badge>
+      {selectedSnapshots.map((s,i)=>(
+        <Badge key={s.id ?? i} $color={s.color} onClick={openDrop}>{s.label}</Badge>
       ))}
       <AddTagBtn ref={btnRef} onClick={openDrop}>{selectedSnapshots.length===0?'+ tag':'+'}</AddTagBtn>
       {open && <>

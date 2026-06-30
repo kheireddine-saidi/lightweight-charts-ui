@@ -85,6 +85,7 @@ export const useTradingStore = create<TradingState>((set, get) => {
     EventBus.on(Events.POSITION_CLOSED, () => get()._syncFromEngine());
     EventBus.on(Events.ORDER_CREATED,   () => get()._syncFromEngine());
     EventBus.on(Events.ORDER_FILLED,    () => get()._syncFromEngine());
+    EventBus.on(Events.ORDER_CANCELLED, () => get()._syncFromEngine());
     EventBus.on(Events.BALANCE_CHANGED, ({ balance, equity, reservedMargin }: { balance: number; equity: number; reservedMargin?: number }) => {
       set({ balance, equity, ...(reservedMargin != null ? { reservedMargin } : {}) });
     });

@@ -4,122 +4,250 @@ import styled from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
 import { useTradeSetupStore } from '../../stores/tradeSetupStore';
+import { useWorkspaceStore } from '../../features/workspace/WorkspaceStore';
 import { EventBus, Events } from '../../core/EventBus';
 
 /* ─── Design tokens ─── */
 const C = {
-  bg: '#131722', surface: '#1e222d', surfaceElevated: '#2a2e39',
-  border: '#2a2e39', borderFocus: '#3a5fcd',
-  text: '#d1d4dc', textMuted: '#787b86', textDim: '#555b6e',
-  green: '#0ecb81', greenMuted: 'rgba(14,203,129,0.15)',
-  red: '#f23645', redMuted: 'rgba(242,54,69,0.15)',
-  blue: '#2962ff', orange: '#f0a500', orangeMuted: 'rgba(240,165,0,0.12)',
+  bg: '#131722', surface: '#1e222d', elevated: '#2a2e39',
+  border: '#2a2e39',
+  text: '#d1d4dc', muted: '#787b86', dim: '#555b6e',
+  green: '#0ecb81', greenBg: 'rgba(14,203,129,0.12)',
+  red: '#f23645',   redBg:  'rgba(242,54,69,0.12)',
+  blue: '#2962ff',  orange: '#f0a500',
 };
 
-/* ─── Styled components ─── */
-const Panel = styled.div`display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;font-size:13px;color:${C.text};background:${C.bg};height:100%;`;
-const TopControls = styled.div`display:flex;gap:8px;padding:12px 16px 0;align-items:center;`;
-const BadgeBtn = styled.div`background:${C.surfaceElevated};border-radius:4px;padding:5px 10px;font-size:12px;font-weight:500;color:${C.text};cursor:default;`;
-const LeverageInput = styled.input`background:${C.surfaceElevated};border:1px solid ${C.border};border-radius:4px;padding:4px 8px;font-size:12px;font-weight:600;color:${C.text};width:60px;outline:none;text-align:center;&:focus{border-color:${C.blue};}&::-webkit-outer-spin-button,&::-webkit-inner-spin-button{-webkit-appearance:none;}-moz-appearance:textfield;`;
-const LevLabel = styled.span`font-size:11px;color:${C.textMuted};`;
-const TabsRow = styled.div`display:flex;gap:16px;padding:0 16px;margin-top:10px;border-bottom:1px solid ${C.border};`;
-const Tab = styled.div`padding:8px 0;font-size:14px;font-weight:${p=>p.$active?'600':'500'};color:${p=>p.$active?C.text:C.textMuted};border-bottom:3px solid ${p=>p.$active?C.orange:'transparent'};cursor:pointer;transition:all .2s;&:hover{color:${C.text};}`;
-const FormContainer = styled.div`padding:16px;display:flex;flex-direction:column;gap:12px;flex:1;overflow-y:auto;`;
-const InfoRow = styled.div`display:flex;justify-content:space-between;align-items:center;font-size:12px;`;
-const InfoLabel = styled.span`color:${C.textMuted};`;
-const InfoValue = styled.span`color:${p=>p.$color||C.text};font-weight:${p=>p.$bold?'600':'500'};font-variant-numeric:tabular-nums;`;
-const FieldGroup = styled.div`display:flex;flex-direction:column;gap:5px;`;
-const FieldLabel = styled.label`font-size:12px;color:${C.textMuted};`;
-const InputWrapper = styled.div`display:flex;align-items:center;background:${C.surfaceElevated};border-radius:6px;padding:0 12px;height:40px;border:1px solid transparent;transition:border-color .2s;&:focus-within{border-color:${C.textMuted};}`;
-const StyledInput = styled.input`flex:1;background:transparent;border:none;color:${C.text};font-size:14px;font-variant-numeric:tabular-nums;outline:none;width:100%;&::placeholder{color:${C.textDim};}-moz-appearance:textfield;&::-webkit-outer-spin-button,&::-webkit-inner-spin-button{-webkit-appearance:none;}`;
-const Suffix = styled.span`color:${C.text};font-size:13px;font-weight:500;margin-left:8px;`;
-const SuffixButton = styled.div`color:${C.textMuted};font-size:12px;margin-left:12px;padding-left:12px;border-left:1px solid ${C.border};display:flex;align-items:center;gap:4px;cursor:pointer;`;
+/* ─── Layout ─── */
+const Panel = styled.div`
+  display: flex; flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  font-size: 13px; color: ${C.text};
+  background: ${C.bg}; height: 100%; overflow: hidden;
+`;
 
-/* ─── Position size slider ─── */
-const SliderWrap = styled.div`margin-top:2px;`;
-const SliderTrack = styled.div`position:relative;height:4px;background:${C.surfaceElevated};border-radius:2px;margin:0 0 4px;`;
-const SliderFill = styled.div`position:absolute;left:0;top:0;height:100%;background:${C.blue};border-radius:2px;transition:width .1s;`;
-const SliderInput = styled.input.attrs({type:'range'})`position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;margin:0;`;
-const SliderMarkers = styled.div`display:flex;justify-content:space-between;font-size:10px;color:${C.textDim};`;
-const MarkerBtn = styled.span`cursor:pointer;padding:1px 3px;border-radius:2px;&:hover{color:${C.text};}`;
+const TopBar = styled.div`
+  padding: 12px 16px 0;
+  display: flex; flex-direction: column; gap: 6px;
+`;
 
-const CostSummary = styled.div`display:flex;justify-content:space-between;font-size:12px;color:${C.text};padding:6px 0;border-bottom:1px solid ${C.border};`;
-const CheckboxRow = styled.label`display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:${C.text};input[type="checkbox"]{accent-color:${C.orange};width:14px;height:14px;cursor:pointer;}`;
-const ActionRow = styled.div`display:flex;gap:12px;margin-top:auto;padding-top:12px;`;
-const ActionBtn = styled.button`flex:1;height:44px;border:none;border-radius:6px;font-weight:600;font-size:14px;color:#fff;cursor:pointer;background:${p=>p.$side==='long'?C.green:C.red};transition:opacity .15s,transform .1s;&:hover{opacity:.9;}&:active{transform:scale(.98);}&:disabled{opacity:.5;cursor:not-allowed;}`;
-const SetupBanner = styled.div`display:flex;align-items:center;padding:7px 10px;background:rgba(41,98,255,.1);border-left:3px solid ${C.blue};border-radius:0 4px 4px 0;font-size:11px;color:${C.blue};`;
-const RiskBadge = styled.div`background:${p=>p.$risk==='high'?C.redMuted:p.$risk==='med'?C.orangeMuted:C.greenMuted};color:${p=>p.$risk==='high'?C.red:p.$risk==='med'?C.orange:C.green};border-radius:4px;padding:7px 10px;font-size:12px;display:flex;justify-content:space-between;align-items:center;`;
-const MarginBar = styled.div`height:3px;border-radius:2px;background:${C.surfaceElevated};overflow:hidden;`;
-const MarginFill = styled.div`height:100%;border-radius:2px;background:${p=>p.$pct>80?C.red:p.$pct>50?C.orange:C.blue};transition:width .3s;`;
+const TickerRow = styled.div`
+  display: flex; align-items: center; gap: 8px;
+`;
 
-/* ─── Size slider markers (% of available margin) ─── */
+const TickerName = styled.div`
+  font-size: 16px; font-weight: 700; color: ${C.text}; letter-spacing: .02em;
+`;
+
+const LivePrice = styled.div`
+  font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: ${p => p.$up ? C.green : C.red};
+  background: ${p => p.$up ? C.greenBg : C.redBg};
+  padding: 2px 8px; border-radius: 4px;
+`;
+
+const LevRow = styled.div`
+  display: flex; align-items: center; gap: 8px;
+`;
+
+const BadgeBtn = styled.div`
+  background: ${C.elevated}; border-radius: 4px; padding: 4px 10px;
+  font-size: 11px; font-weight: 500; color: ${C.muted}; cursor: default;
+`;
+
+const LevLabel = styled.span` font-size: 11px; color: ${C.muted}; `;
+
+const LevInput = styled.input`
+  background: ${C.elevated}; border: 1px solid ${C.border}; border-radius: 4px;
+  padding: 3px 8px; font-size: 12px; font-weight: 700; color: ${C.text};
+  width: 58px; outline: none; text-align: center;
+  &:focus { border-color: ${C.blue}; }
+  -moz-appearance: textfield;
+  &::-webkit-outer-spin-button, &::-webkit-inner-spin-button { -webkit-appearance: none; }
+`;
+
+const Tabs = styled.div`
+  display: flex; gap: 16px; padding: 0 16px;
+  margin-top: 8px; border-bottom: 1px solid ${C.border};
+`;
+
+const Tab = styled.div`
+  padding: 8px 0; font-size: 13px;
+  font-weight: ${p => p.$active ? 600 : 500};
+  color: ${p => p.$active ? C.text : C.muted};
+  border-bottom: 3px solid ${p => p.$active ? C.orange : 'transparent'};
+  cursor: pointer; transition: color .15s;
+  &:hover { color: ${C.text}; }
+`;
+
+const Form = styled.div`
+  flex: 1; overflow-y: auto; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 11px;
+  &::-webkit-scrollbar { width: 3px; }
+  &::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 2px; }
+`;
+
+const Banner = styled.div`
+  padding: 6px 10px; background: rgba(41,98,255,.1);
+  border-left: 3px solid ${C.blue}; border-radius: 0 4px 4px 0;
+  font-size: 11px; color: ${C.blue};
+`;
+
+/* ─── Field ─── */
+const FieldGroup = styled.div` display: flex; flex-direction: column; gap: 4px; `;
+const FieldLabel = styled.label` font-size: 11px; color: ${C.muted}; `;
+const InputRow = styled.div`
+  display: flex; align-items: center;
+  background: ${C.elevated}; border-radius: 6px; height: 38px;
+  padding: 0 12px; border: 1px solid transparent;
+  &:focus-within { border-color: ${C.muted}; }
+`;
+const Inp = styled.input`
+  flex: 1; background: transparent; border: none; outline: none;
+  color: ${C.text}; font-size: 13px; font-variant-numeric: tabular-nums;
+  &::placeholder { color: ${C.dim}; }
+  -moz-appearance: textfield;
+  &::-webkit-outer-spin-button, &::-webkit-inner-spin-button { -webkit-appearance: none; }
+`;
+const InpSuffix = styled.span` color: ${C.muted}; font-size: 12px; `;
+
+/* ─── Market price display in market mode ─── */
+const MarketPriceBox = styled.div`
+  background: ${C.elevated}; border-radius: 6px; height: 38px;
+  padding: 0 12px; display: flex; align-items: center; justify-content: space-between;
+`;
+const MarketPriceVal = styled.span`
+  font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: ${C.text};
+`;
+
+/* ─── Slider ─── */
+const SliderWrap = styled.div` margin-top: -2px; `;
+const Track = styled.div`
+  position: relative; height: 4px; background: ${C.elevated}; border-radius: 2px; margin-bottom: 4px;
+`;
+const Fill = styled.div`
+  position: absolute; left: 0; top: 0; height: 100%;
+  width: ${p => p.$pct}%; background: ${C.blue}; border-radius: 2px; pointer-events: none;
+`;
+const SliderEl = styled.input.attrs({type:'range'})`
+  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; margin: 0;
+`;
+const Marks = styled.div`
+  display: flex; justify-content: space-between; font-size: 10px; color: ${C.dim};
+`;
+const Mark = styled.span` cursor: pointer; padding: 1px 3px; &:hover { color: ${C.text}; } `;
+
+/* ─── Cost / TP / SL ─── */
+const CostRow = styled.div`
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: ${C.muted};
+  padding: 4px 0; border-top: 1px solid ${C.border};
+`;
+
+const TPSLGrid = styled.div`
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+`;
+
+const RRBadge = styled.div`
+  border-radius: 4px; padding: 6px 10px; font-size: 11px;
+  display: flex; justify-content: space-between; align-items: center;
+  background: ${p => p.$risk==='high' ? C.redBg : p.$risk==='med' ? 'rgba(240,165,0,.12)' : C.greenBg};
+  color: ${p => p.$risk==='high' ? C.red : p.$risk==='med' ? C.orange : C.green};
+`;
+
+/* ─── Actions ─── */
+const ActionRow = styled.div` display: flex; gap: 10px; `;
+const ActionBtn = styled.button`
+  flex: 1; height: 42px; border: none; border-radius: 6px;
+  font-weight: 700; font-size: 13px; color: #fff; cursor: pointer;
+  background: ${p => p.$side==='long' ? C.green : C.red};
+  &:hover { opacity: .9; }
+  &:disabled { opacity: .4; cursor: not-allowed; }
+`;
+
+/* ─── Balance footer ─── */
+const BalanceFooter = styled.div`
+  padding: 10px 16px; border-top: 1px solid ${C.border};
+  background: ${C.surface}; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 5px;
+`;
+
+const BalRow = styled.div`
+  display: flex; justify-content: space-between; align-items: center; font-size: 11px;
+`;
+const BalLabel = styled.span` color: ${C.muted}; `;
+const BalVal = styled.span`
+  color: ${p => p.$color || C.text}; font-weight: 600; font-variant-numeric: tabular-nums;
+`;
+const MarginBarWrap = styled.div` height: 3px; background: ${C.elevated}; border-radius: 2px; overflow: hidden; `;
+const MarginFill = styled.div`
+  height: 100%; border-radius: 2px;
+  width: ${p => Math.min(p.$pct, 100)}%;
+  background: ${p => p.$pct > 80 ? C.red : p.$pct > 50 ? C.orange : C.blue};
+  transition: width .3s;
+`;
+
 const SIZE_MARKS = [0, 25, 50, 75, 100];
 
 const TradingPanel = ({ currentTime }) => {
-  const [orderType, setOrderType] = useState('limit');
-  const [quoteSize, setQuoteSize]   = useState('');   // position value in USDT (quote currency)
+  const [orderType, setOrderType]   = useState('limit');
+  const [quoteSize, setQuoteSize]   = useState('');
   const [limitPrice, setLimitPrice] = useState('');
   const [leverage, setLeverage]     = useState(20);
-  const [sizeSlider, setSizeSlider]  = useState(0);   // 0-100 %
-  const [showTPSL, setShowTPSL]     = useState(false);
+  const [slider, setSlider]         = useState(0);
   const [stopLoss, setStopLoss]     = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [fromSetup, setFromSetup]   = useState(false);
   const [pendingZoneId, setPendingZoneId] = useState(null);
+  const [prevPrice, setPrevPrice]   = useState(null);
 
-  const { openPosition, balance, equity, reservedMargin = 0 } = useTradingStore();
-  const currentPrice = useMarketStore(s => s.currentPrice);
-  const tradeSetup   = useTradeSetupStore(s => s);
+  const { openPosition, balance, reservedMargin = 0 } = useTradingStore();
+  const currentPrice   = useMarketStore(s => s.currentPrice);
+  const tradeSetup     = useTradeSetupStore(s => s);
+  const symbol         = useWorkspaceStore(s => s.getActiveChart()?.symbol ?? 'BTCUSDT');
 
-  // Free margin = balance - margin locked in open positions and pending orders
-  const freeMargin = Math.max(0, balance - reservedMargin);
+  // Track price direction for colour indicator
+  useEffect(() => {
+    setPrevPrice(p => { if (p !== null && p !== currentPrice) return currentPrice; return currentPrice; });
+  }, [currentPrice]);
+  const priceUp = prevPrice === null || currentPrice >= prevPrice;
 
-  // Derived: entry price (limit or market)
-  const entryPrice  = orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : currentPrice;
-
-  // quoteSize is position value in USDT. positionSize = quoteSize / entryPrice (base units)
-  const quoteSizeNum  = parseFloat(quoteSize) || 0;
-  const positionSize  = entryPrice > 0 ? quoteSizeNum / entryPrice : 0;
-
-  // Margin required = position value / leverage
+  // Margin calculations
+  const freeMargin     = Math.max(0, balance - reservedMargin);
+  const entryPrice     = orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : currentPrice;
+  const quoteSizeNum   = parseFloat(quoteSize) || 0;
+  const positionSize   = entryPrice > 0 ? quoteSizeNum / entryPrice : 0;
   const requiredMargin = leverage > 0 ? quoteSizeNum / leverage : 0;
+  const maxPosVal      = freeMargin * leverage;
+  const marginUsedPct  = balance > 0 ? (reservedMargin / balance) * 100 : 0;
 
-  // Slider → quoteSize
-  const maxPositionValue = freeMargin * leverage;
   const setFromSlider = (pct) => {
-    setSizeSlider(pct);
-    const val = (pct / 100) * maxPositionValue;
+    setSlider(pct);
+    const val = (pct / 100) * maxPosVal;
     setQuoteSize(val > 0 ? val.toFixed(2) : '');
   };
-
-  // quoteSize manual input → sync slider
-  const handleQuoteSizeChange = (val) => {
-    setQuoteSize(val);
-    const num = parseFloat(val) || 0;
-    const pct  = maxPositionValue > 0 ? Math.min(100, (num / maxPositionValue) * 100) : 0;
-    setSizeSlider(Math.round(pct));
+  const handleSizeChange = (v) => {
+    setQuoteSize(v);
+    const num = parseFloat(v) || 0;
+    setSlider(Math.round(maxPosVal > 0 ? Math.min(100, (num / maxPosVal) * 100) : 0));
   };
 
-  // Risk/Reward
-  const slNum  = showTPSL && stopLoss   ? parseFloat(stopLoss)   : null;
-  const tpNum  = showTPSL && takeProfit ? parseFloat(takeProfit) : null;
-  const riskAmount    = slNum ? Math.abs(entryPrice - slNum) * positionSize * leverage : null;
-  const rewardAmount  = tpNum ? Math.abs(tpNum - entryPrice) * positionSize * leverage : null;
-  const riskPercent   = riskAmount ? (riskAmount / freeMargin) * 100 : null;
-  const rrRatio       = riskAmount && rewardAmount ? rewardAmount / riskAmount : null;
-  const riskLevel     = riskPercent === null ? null : riskPercent > 5 ? 'high' : riskPercent > 2 ? 'med' : 'low';
+  // Risk / Reward display
+  const slNum         = stopLoss   ? parseFloat(stopLoss)   : null;
+  const tpNum         = takeProfit ? parseFloat(takeProfit) : null;
+  const riskAmt       = slNum ? Math.abs(entryPrice - slNum)  * positionSize * leverage : null;
+  const rewardAmt     = tpNum ? Math.abs(tpNum - entryPrice)  * positionSize * leverage : null;
+  const riskPct       = riskAmt && freeMargin > 0 ? (riskAmt / freeMargin) * 100 : null;
+  const rrRatio       = riskAmt && rewardAmt ? rewardAmt / riskAmt : null;
+  const riskLevel     = riskPct == null ? 'low' : riskPct > 5 ? 'high' : riskPct > 2 ? 'med' : 'low';
 
-  const marginUsedPct = balance > 0 ? Math.min(100, (reservedMargin / balance) * 100) : 0;
-
-  // ── Trade Setup Tool integration ──────────────────────────────────────
+  // ── Trade Setup Tool sync ──────────────────────────────────────────────
   useEffect(() => {
     if (!tradeSetup.isReady) return;
     setOrderType('limit');
     if (tradeSetup.entryPrice != null) setLimitPrice(String(tradeSetup.entryPrice));
-    let hasAdv = false;
-    if (tradeSetup.stopLoss != null)   { hasAdv = true; setStopLoss(String(tradeSetup.stopLoss)); }
-    if (tradeSetup.takeProfit != null) { hasAdv = true; setTakeProfit(String(tradeSetup.takeProfit)); }
-    if (hasAdv) setShowTPSL(true);
+    if (tradeSetup.stopLoss   != null) setStopLoss(String(tradeSetup.stopLoss));
+    if (tradeSetup.takeProfit != null) setTakeProfit(String(tradeSetup.takeProfit));
     setPendingZoneId(tradeSetup.zoneId ?? null);
     setFromSetup(true);
     useTradeSetupStore.getState().clearSetup();
@@ -135,196 +263,204 @@ const TradingPanel = ({ currentTime }) => {
   }, [tradeSetup.entryPrice, tradeSetup.stopLoss, tradeSetup.takeProfit]);
 
   // ── Place order ──────────────────────────────────────────────────────
-  const handlePlaceOrder = useCallback((sideToPlace) => {
+  const handleOrder = useCallback((side) => {
     if (!quoteSizeNum || quoteSizeNum <= 0) return;
-    if (requiredMargin > freeMargin) return; // insufficient margin
+    if (requiredMargin > freeMargin + 0.001) return;
 
     const positionId = openPosition({
-      side:         sideToPlace,
-      type:         orderType,
-      entryPrice:   currentPrice,
-      limitPrice:   orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined,
+      side,
+      type:          orderType,
+      entryPrice:    currentPrice,
+      limitPrice:    orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined,
       positionSize,
-      quoteSize:    quoteSizeNum,
+      quoteSize:     quoteSizeNum,
       leverage,
       requiredMargin,
-      stopLoss:     showTPSL && stopLoss   ? parseFloat(stopLoss)   : undefined,
-      takeProfit:   showTPSL && takeProfit ? parseFloat(takeProfit) : undefined,
-      entryTime:    currentTime ?? Math.floor(Date.now() / 1000),
+      stopLoss:      slNum ?? undefined,
+      takeProfit:    tpNum ?? undefined,
+      entryTime:     currentTime ?? Math.floor(Date.now() / 1000),
     });
 
-    // Link the zone to the order IMMEDIATELY — before any async event processing.
-    // For immediate fills (limit above/below market), ORDER_FILLED fires inside openPosition
-    // synchronously, so the zone must have its positionId set beforehand.
-    // We always emit 'pending' first; App.jsx ORDER_FILLED listener will upgrade to 'open'.
     if (pendingZoneId && positionId) {
       EventBus.emit(Events.TRADE_ZONE_LINKED, {
-        zoneId:     pendingZoneId,
-        positionId,
-        status:     'pending',
+        zoneId: pendingZoneId, positionId, status: 'pending',
       });
     }
 
-    setStopLoss(''); setTakeProfit(''); setShowTPSL(false);
+    // Reset form
+    setStopLoss(''); setTakeProfit('');
     setFromSetup(false); setPendingZoneId(null);
     if (orderType === 'limit') setLimitPrice('');
-    setQuoteSize(''); setSizeSlider(0);
+    setQuoteSize(''); setSlider(0);
   }, [orderType, quoteSizeNum, positionSize, limitPrice, leverage, requiredMargin, freeMargin,
-      showTPSL, stopLoss, takeProfit, currentTime, currentPrice, openPosition, pendingZoneId]);
+      slNum, tpNum, currentTime, currentPrice, openPosition, pendingZoneId]);
+
+  const cantPlace = !quoteSizeNum || requiredMargin > freeMargin + 0.001
+    || (orderType === 'limit' && !limitPrice);
 
   return (
     <Panel>
-      {/* Top: leverage input + margin type badge */}
-      <TopControls>
-        <BadgeBtn>Cross</BadgeBtn>
-        <LevLabel>Leverage</LevLabel>
-        <LeverageInput
-          type="number" min={1} max={200} step={1} value={leverage}
-          onChange={e => setLeverage(Math.max(1, parseInt(e.target.value) || 1))}
-        />
-        <LevLabel>×</LevLabel>
-      </TopControls>
+      {/* ── Top: ticker + live price + leverage ── */}
+      <TopBar>
+        <TickerRow>
+          <TickerName>{symbol}</TickerName>
+          <LivePrice $up={priceUp}>
+            {currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 5})}
+          </LivePrice>
+        </TickerRow>
 
-      {/* Tabs */}
-      <TabsRow>
-        <Tab $active={orderType==='limit'}  onClick={()=>setOrderType('limit')}>Limit</Tab>
-        <Tab $active={orderType==='market'} onClick={()=>setOrderType('market')}>Market</Tab>
-        <Tab>Trigger ▾</Tab>
-      </TabsRow>
+        <LevRow>
+          <BadgeBtn>Cross</BadgeBtn>
+          <LevLabel>Leverage</LevLabel>
+          <LevInput
+            type="number" min={1} max={200} step={1} value={leverage}
+            onChange={e => setLeverage(Math.max(1, parseInt(e.target.value) || 1))}
+          />
+          <LevLabel>×</LevLabel>
+        </LevRow>
+      </TopBar>
 
-      <FormContainer>
-        {fromSetup && <SetupBanner>📐 Pre-filled from chart setup — review & place</SetupBanner>}
+      {/* ── Tabs: Limit / Market ── */}
+      <Tabs>
+        <Tab $active={orderType==='limit'}  onClick={() => setOrderType('limit')}>Limit</Tab>
+        <Tab $active={orderType==='market'} onClick={() => setOrderType('market')}>Market</Tab>
+      </Tabs>
 
-        {/* Balance / Free margin */}
-        <InfoRow>
-          <InfoLabel>Balance</InfoLabel>
-          <InfoValue>{balance.toFixed(2)} USDT</InfoValue>
-        </InfoRow>
-        <InfoRow style={{marginTop:'-6px'}}>
-          <InfoLabel>Free margin</InfoLabel>
-          <InfoValue $color={freeMargin < balance * 0.2 ? C.red : C.green}>
-            {freeMargin.toFixed(2)} USDT
-          </InfoValue>
-        </InfoRow>
-        {reservedMargin > 0 && (
-          <div>
-            <MarginBar>
-              <MarginFill $pct={marginUsedPct} style={{width:`${marginUsedPct}%`}}/>
-            </MarginBar>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:C.textDim,marginTop:2}}>
-              <span>Used {reservedMargin.toFixed(2)} USDT</span>
-              <span>{marginUsedPct.toFixed(0)}%</span>
-            </div>
-          </div>
-        )}
+      <Form>
+        {fromSetup && <Banner>📐 Pre-filled from chart setup</Banner>}
 
-        {/* Price */}
-        {orderType === 'limit' && (
+        {/* ── Price field ── */}
+        {orderType === 'limit' ? (
           <FieldGroup>
             <FieldLabel>Limit Price</FieldLabel>
-            <InputWrapper>
-              <StyledInput type="number" step="0.01"
-                placeholder={currentPrice.toFixed(2)}
+            <InputRow>
+              <Inp type="number" step="0.00001"
+                placeholder={currentPrice.toFixed(4)}
                 value={limitPrice}
-                onChange={e=>setLimitPrice(e.target.value)}
+                onChange={e => setLimitPrice(e.target.value)}
               />
-              <Suffix>USDT</Suffix>
-              <SuffixButton>BBO</SuffixButton>
-            </InputWrapper>
+              <InpSuffix>USDT</InpSuffix>
+            </InputRow>
+          </FieldGroup>
+        ) : (
+          <FieldGroup>
+            <FieldLabel>Market Price</FieldLabel>
+            <MarketPriceBox>
+              <MarketPriceVal>
+                {currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 5})}
+              </MarketPriceVal>
+              <InpSuffix>USDT</InpSuffix>
+            </MarketPriceBox>
           </FieldGroup>
         )}
 
-        {/* Amount in quote currency (USDT) */}
+        {/* ── Amount ── */}
         <FieldGroup>
           <FieldLabel>Amount (USDT)</FieldLabel>
-          <InputWrapper>
-            <StyledInput type="number" step="1" min="0" placeholder="0.00"
+          <InputRow>
+            <Inp type="number" step="1" min="0" placeholder="0.00"
               value={quoteSize}
-              onChange={e=>handleQuoteSizeChange(e.target.value)}
+              onChange={e => handleSizeChange(e.target.value)}
             />
-            <Suffix>USDT</Suffix>
-          </InputWrapper>
-          {entryPrice > 0 && quoteSizeNum > 0 && (
-            <div style={{fontSize:10,color:C.textDim,textAlign:'right'}}>
-              ≈ {positionSize.toFixed(6)} {' base units'}
+            <InpSuffix>USDT</InpSuffix>
+          </InputRow>
+          {quoteSizeNum > 0 && entryPrice > 0 && (
+            <div style={{fontSize:10, color:C.dim, textAlign:'right'}}>
+              ≈ {positionSize.toFixed(6)} {symbol.replace('USDT','').replace('BUSD','')}
             </div>
           )}
         </FieldGroup>
 
-        {/* Position size slider (% of available margin × leverage) */}
+        {/* ── Position size slider ── */}
         <SliderWrap>
-          <SliderTrack>
-            <SliderFill style={{width:`${sizeSlider}%`}}/>
-            <SliderInput
-              min={0} max={100} step={1} value={sizeSlider}
-              onChange={e=>setFromSlider(parseInt(e.target.value))}
+          <Track>
+            <Fill $pct={slider}/>
+            <SliderEl min={0} max={100} step={1} value={slider}
+              onChange={e => setFromSlider(parseInt(e.target.value))}
             />
-          </SliderTrack>
-          <SliderMarkers>
-            {SIZE_MARKS.map(m=>(
-              <MarkerBtn key={m} onClick={()=>setFromSlider(m)}>
-                {m}%
-              </MarkerBtn>
+          </Track>
+          <Marks>
+            {SIZE_MARKS.map(m => (
+              <Mark key={m} onClick={() => setFromSlider(m)}>{m}%</Mark>
             ))}
-          </SliderMarkers>
+          </Marks>
         </SliderWrap>
 
-        {/* Margin summary */}
-        <CostSummary>
-          <span>Required margin: <strong>{requiredMargin.toFixed(2)} USDT</strong></span>
-          <span style={{color: requiredMargin > freeMargin ? C.red : C.textMuted, fontSize:11}}>
-            {requiredMargin > freeMargin ? '⚠ Insufficient' : `${((requiredMargin/Math.max(freeMargin,1))*100).toFixed(0)}% of free`}
+        {/* ── Required margin summary ── */}
+        <CostRow>
+          <span>Margin required</span>
+          <span style={{
+            color: requiredMargin > freeMargin ? C.red : C.text,
+            fontWeight: 600,
+          }}>
+            {requiredMargin.toFixed(2)} USDT
+            {requiredMargin > freeMargin && ' ⚠'}
           </span>
-        </CostSummary>
+        </CostRow>
 
-        {/* TP/SL */}
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <CheckboxRow>
-            <input type="checkbox" checked={showTPSL} onChange={e=>setShowTPSL(e.target.checked)}/>
-            TP / SL
-          </CheckboxRow>
-          <span style={{fontSize:12,color:C.orange,cursor:'pointer'}}>GTC ▾</span>
-        </div>
+        {/* ── TP / SL — always visible ── */}
+        <TPSLGrid>
+          <FieldGroup>
+            <FieldLabel>Take Profit</FieldLabel>
+            <InputRow>
+              <Inp type="number" step="0.00001" placeholder="Price"
+                value={takeProfit} onChange={e => setTakeProfit(e.target.value)}/>
+            </InputRow>
+          </FieldGroup>
+          <FieldGroup>
+            <FieldLabel>Stop Loss</FieldLabel>
+            <InputRow>
+              <Inp type="number" step="0.00001" placeholder="Price"
+                value={stopLoss} onChange={e => setStopLoss(e.target.value)}/>
+            </InputRow>
+          </FieldGroup>
+        </TPSLGrid>
 
-        {showTPSL && (
+        {/* ── R:R badge ── */}
+        {riskAmt != null && riskAmt > 0 && (
+          <RRBadge $risk={riskLevel}>
+            <span>Risk {riskAmt.toFixed(2)} USDT ({riskPct?.toFixed(1)}%)</span>
+            {rrRatio != null && (
+              <span style={{fontWeight:700}}>R:R {rrRatio.toFixed(2)}</span>
+            )}
+          </RRBadge>
+        )}
+
+        {/* ── Buy / Sell ── */}
+        <ActionRow>
+          <ActionBtn $side="long"  onClick={() => handleOrder('long')}  disabled={cantPlace}>
+            Buy / Long
+          </ActionBtn>
+          <ActionBtn $side="short" onClick={() => handleOrder('short')} disabled={cantPlace}>
+            Sell / Short
+          </ActionBtn>
+        </ActionRow>
+      </Form>
+
+      {/* ── Balance footer (always at bottom) ── */}
+      <BalanceFooter>
+        {reservedMargin > 0 && (
           <>
-            <FieldGroup>
-              <FieldLabel>Take Profit</FieldLabel>
-              <InputWrapper>
-                <StyledInput type="number" step="0.00001" placeholder="Price"
-                  value={takeProfit} onChange={e=>setTakeProfit(e.target.value)}/>
-                <SuffixButton style={{border:'none'}}>Last ▾</SuffixButton>
-              </InputWrapper>
-            </FieldGroup>
-            <FieldGroup>
-              <FieldLabel>Stop Loss</FieldLabel>
-              <InputWrapper>
-                <StyledInput type="number" step="0.00001" placeholder="Price"
-                  value={stopLoss} onChange={e=>setStopLoss(e.target.value)}/>
-                <SuffixButton style={{border:'none'}}>Last ▾</SuffixButton>
-              </InputWrapper>
-            </FieldGroup>
+            <MarginBarWrap>
+              <MarginFill $pct={marginUsedPct}/>
+            </MarginBarWrap>
+            <BalRow>
+              <BalLabel>Margin used</BalLabel>
+              <BalVal>{reservedMargin.toFixed(2)} USDT ({marginUsedPct.toFixed(0)}%)</BalVal>
+            </BalRow>
           </>
         )}
-
-        {riskPercent !== null && showTPSL && (
-          <RiskBadge $risk={riskLevel}>
-            <span>Risk {riskAmount?.toFixed(2)} USDT ({riskPercent?.toFixed(1)}%)</span>
-            {rrRatio !== null && <span style={{fontWeight:600}}>R:R {rrRatio.toFixed(2)}</span>}
-          </RiskBadge>
-        )}
-
-        <ActionRow>
-          <ActionBtn $side="long"
-            onClick={()=>handlePlaceOrder('long')}
-            disabled={(orderType==='limit'&&!limitPrice)||!quoteSizeNum||requiredMargin>freeMargin}
-          >Buy / Long</ActionBtn>
-          <ActionBtn $side="short"
-            onClick={()=>handlePlaceOrder('short')}
-            disabled={(orderType==='limit'&&!limitPrice)||!quoteSizeNum||requiredMargin>freeMargin}
-          >Sell / Short</ActionBtn>
-        </ActionRow>
-      </FormContainer>
+        <BalRow>
+          <BalLabel>Free margin</BalLabel>
+          <BalVal $color={freeMargin < balance * 0.2 ? C.red : C.green}>
+            {freeMargin.toFixed(2)} USDT
+          </BalVal>
+        </BalRow>
+        <BalRow>
+          <BalLabel>Balance</BalLabel>
+          <BalVal>{balance.toFixed(2)} USDT</BalVal>
+        </BalRow>
+      </BalanceFooter>
     </Panel>
   );
 };

@@ -3,12 +3,15 @@
  * Each indicator has a unique id, title, source code, and params.
  */
 import { create } from 'zustand';
+import { parsePineInputs, parsePineTitle } from '../indicators/PineTSRuntime';
+import type { PineInputDef } from '../indicators/PineTSRuntime';
 
 export interface UserIndicator {
   id: string;
-  title: string;
+  title: string;            // extracted from indicator("Title") declaration
   source: string;
-  params: Record<string, unknown>;
+  params: Record<string, unknown>;  // keyed by input title name
+  parsedInputs: PineInputDef[];     // extracted input declarations
   enabled: boolean;
   color: string;
 }
@@ -59,12 +62,25 @@ plot(sma20, "SMA 20", color.blue)
 `;
 
 export function createDefaultIndicator(): UserIndicator {
+  const source = DEFAULT_TEMPLATE;
   return {
     id: `ind_${Date.now()}`,
-    title: 'My Indicator',
-    source: DEFAULT_TEMPLATE,
+    title: parsePineTitle(source),
+    source,
     params: {},
+    parsedInputs: parsePineInputs(source),
     enabled: true,
     color: '#2962ff',
+  };
+}
+
+/**
+ * Re-parse inputs and title from source — call after saving edited source.
+ */
+export function refreshIndicatorMeta(ind: UserIndicator): UserIndicator {
+  return {
+    ...ind,
+    title: parsePineTitle(ind.source),
+    parsedInputs: parsePineInputs(ind.source),
   };
 }

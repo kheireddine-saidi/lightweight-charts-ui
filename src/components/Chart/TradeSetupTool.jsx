@@ -458,7 +458,7 @@ const TradeSetupTool = ({
   const PENDING_FILL = '#f0a500';
   const OPEN_FILL    = '#2962ff';
 
-  const ZoneGraphic = ({ zone, geom, isSelected, isLive }) => {
+  const ZoneGraphic = ({ zone, geom, isSelected, isLive, active: isActiveTool }) => {
     if (!geom) return null;
     const { x1, x2, entryY, slY, tpY } = geom;
     const left   = Math.min(x1, x2);
@@ -472,7 +472,7 @@ const TradeSetupTool = ({
     // Entry line is locked once order is filled or closed — no drag allowed
     const entryLocked = isFilled || isClosed;
     // All handles are locked when closed — zone is a permanent historical annotation
-    const allLocked = isClosed || isLive;
+    const allLocked = isClosed || isLive || isActiveTool;
     const labelX = right + 6;
     const zoneId = zone?.id;
 
@@ -535,7 +535,7 @@ const TradeSetupTool = ({
         {/* ── TP line + drag area ─── */}
         <line x1={left} y1={tpY} x2={right} y2={tpY}
           stroke={TP_COLOR} strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
-        {!allLocked && !active && (
+        {!allLocked && !isActiveTool && (
           <rect x={left} y={tpY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -547,7 +547,7 @@ const TradeSetupTool = ({
           stroke={ENTRY_COLOR} strokeWidth={1.5}
           strokeDasharray={entryLocked ? '4 3' : undefined}
           style={{ pointerEvents: 'none' }} />
-        {!allLocked && !entryLocked && !active && (
+        {!allLocked && !entryLocked && !isActiveTool && (
           <rect x={left} y={entryY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -557,7 +557,7 @@ const TradeSetupTool = ({
         {/* ── SL line + drag area ─── */}
         <line x1={left} y1={slY} x2={right} y2={slY}
           stroke={SL_COLOR} strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
-        {!allLocked && !active && (
+        {!allLocked && !isActiveTool && (
           <rect x={left} y={slY - HANDLE_AREA} width={width} height={HANDLE_AREA * 2}
             fill="transparent"
             style={{ cursor: 'ns-resize', pointerEvents: 'all' }}
@@ -565,14 +565,14 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Left edge drag (move entry time) ─── */}
-        {!allLocked && !entryLocked && !active && (
+        {!allLocked && !entryLocked && !isActiveTool && (
           <rect x={left - 6} y={Math.min(tpY, slY)} width={12} height={Math.abs(slY - tpY)}
             fill="transparent"
             style={{ cursor: 'ew-resize', pointerEvents: 'all' }}
             onMouseDown={(e) => startDrag(e, zoneId, 'left_edge')} />
         )}
         {/* ── Right edge drag (move SL time) ─── */}
-        {!allLocked && !active && (
+        {!allLocked && !isActiveTool && (
           <rect x={right - 6} y={Math.min(tpY, slY)} width={12} height={Math.abs(slY - tpY)}
             fill="transparent"
             style={{ cursor: 'ew-resize', pointerEvents: 'all' }}
@@ -580,7 +580,7 @@ const TradeSetupTool = ({
         )}
 
         {/* ── Handle dots on lines (visual only) ─── */}
-        {isSelected && !allLocked && !active && [
+        {isSelected && !allLocked && !isActiveTool && [
           { y: tpY,    col: TP_COLOR,    locked: false },
           { y: entryY, col: ENTRY_COLOR, locked: entryLocked },
           { y: slY,    col: SL_COLOR,    locked: false },
@@ -727,6 +727,7 @@ const TradeSetupTool = ({
           zone={z}
           geom={projectZone(z)}
           isSelected={selectedId === z.id}
+          active={active}
         />
       ))}
 

@@ -5,7 +5,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
-import { useIndicatorStore } from '../../stores/indicatorStore';
+import { useIndicatorStore, refreshIndicatorMeta } from '../../stores/indicatorStore';
 import type { UserIndicator } from '../../stores/indicatorStore';
 
 const C = {
@@ -118,7 +118,12 @@ const SourceEditor: React.FC<SourceEditorProps> = ({ indicator, onClose }) => {
   };
 
   const handleSave = () => {
-    upsert({ ...indicator, title: title.trim() || indicator.title, source });
+    const updated = refreshIndicatorMeta({
+      ...indicator,
+      title: title.trim() || indicator.title,
+      source,
+    });
+    upsert(updated);
     setDirty(false);
     onClose();
   };

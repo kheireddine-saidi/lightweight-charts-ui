@@ -48,9 +48,10 @@ const createManagedWebSocket = (urlBuilder, attachHandlers) => {
     };
 };
 
-export const getKlines = async (symbol, interval = '1d', limit = 1000, signal) => {
+export const getKlines = async (symbol, interval = '1d', limit = 1000, signal, endTime = null) => {
     const safeLimit = Number.isFinite(limit) ? limit : 1000;
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${safeLimit}`;
+    let url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${safeLimit}`;
+    if (endTime) url += `&endTime=${endTime}`;
     try {
         const response = await fetch(url, { signal });
         if (!response.ok) {

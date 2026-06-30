@@ -92,6 +92,8 @@ const ChartComponent = forwardRef(({
 
     // Fallback to live feed if no feed prop provided (backward compat)
     const activeFeed = feed ?? binanceLiveFeedSingleton;
+    const activeFeedRef = useRef(activeFeed);
+    useEffect(() => { activeFeedRef.current = activeFeed; }, [activeFeed]);
 
     const chartContainerRef = useRef();
     const [isLoading, setIsLoading] = useState(true);
@@ -1209,7 +1211,7 @@ useImperativeHandle(ref, () => ({
                 horzLines: { color: theme === 'dark' ? '#2A2E39' : '#e0e3eb' },
             },
             crosshair: {
-                mode: magnetMode ? 1 : 0,
+                mode: magnetMode ? 3 : 0, // 3=MagnetOHLC snaps to open/high/low/close; 0=Normal
                 vertLine: {
                     width: 1,
                     color: theme === 'dark' ? '#758696' : '#9598a1',
@@ -1289,8 +1291,88 @@ useImperativeHandle(ref, () => ({
             }
         };
 
-        // Use Logical Range change for better performance/accuracy mapping to data indices
-        chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleTimeRangeChange);
+        // ── Historical data loading on scroll ─────────────────────────────────
+        // When the user scrolls left to within 50 bars of the oldest loaded candle,
+        // fetch the previous page. If Binance returns 0 new bars, show a "no earlier
+        // data" dinosaur marker.
+        let isLoadingMore = false;
+        let noMoreHistory = false;
+        let dinoMarkerId = null;
+
+        const loadMoreHistory = async (logicalFrom) => {
+            if (isLoadingMore || noMoreHistory || isReplayModeRef.current) return;
+            if (!dataRef.current?.length) return;
+
+            // Only trigger when user is near the left edge (within 50 bars of oldest)
+            if (logicalFrom > 50) return;
+
+            isLoadingMore = true;
+            const oldestCandle = dataRef.current[0];
+            const endTimeMs = oldestCandle.time * 1000; // convert seconds → ms for Binance
+
+            try {
+                const feed = activeFeedRef.current;
+                if (!feed || typeof feed.loadHistoryBefore !== 'function') return;
+
+                const olderCandles = await feed.loadHistoryBefore(
+                    symbol, interval, endTimeMs, 500, abortController.signal
+                );
+
+                if (!olderCandles?.length) {
+                    // No more data — place dinosaur marker at the beginning
+                    noMoreHistory = true;
+                    if (mainSeriesRef.current && !dinoMarkerId) {
+                        dinoMarkerId = 'dino_marker';
+                        mainSeriesRef.current.setMarkers([{
+                            time: oldestCandle.time,
+                            position: 'belowBar',
+                            color: '#787b86',
+                            shape: 'text',
+                            text: '🦕 No earlier data',
+                            id: dinoMarkerId,
+                            size: 1,
+                        }]);
+                    }
+                    return;
+                }
+
+                // Prepend new candles — filter out any that overlap existing data
+                const existingTimes = new Set(dataRef.current.map(c => c.time));
+                const fresh = olderCandles.filter(c => !existingTimes.has(c.time));
+                if (!fresh.length) { noMoreHistory = true; return; }
+
+                const newData = [...fresh, ...dataRef.current];
+                dataRef.current = newData;
+                timeIndexMapRef.current = new Map(newData.map((d, i) => [d.time, i]));
+
+                const transformed = transformData(newData, chartTypeRef.current);
+                mainSeriesRef.current?.setData(transformed);
+
+                // Re-run PineTS with expanded data
+                if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(newData);
+
+                // Remove dino marker if we managed to load data
+                if (dinoMarkerId) {
+                    mainSeriesRef.current?.setMarkers([]);
+                    dinoMarkerId = null;
+                    noMoreHistory = false;
+                }
+            } catch (err) {
+                if (err?.name !== 'AbortError') console.warn('[loadMoreHistory]', err);
+            } finally {
+                isLoadingMore = false;
+            }
+        };
+
+        const origHandleVisible = handleVisibleTimeRangeChange;
+        const handleVisibleWithPagination = () => {
+            origHandleVisible?.();
+            const logRange = chart.timeScale().getVisibleLogicalRange();
+            if (logRange) loadMoreHistory(logRange.from);
+        };
+
+        // Subscribe to logical range changes for both price-scale label updates and pagination
+        chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleWithPagination);
 
         // Handle right-click to cancel tool
         const handleContextMenu = (event) => {
@@ -1311,7 +1393,7 @@ useImperativeHandle(ref, () => ({
             }
 
             try {
-                chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleTimeRangeChange);
+                chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleWithPagination);
             } catch (e) {
                 console.warn('Failed to unsubscribe visible logical range change', e);
             }
@@ -1560,6 +1642,10 @@ useImperativeHandle(ref, () => ({
 
                         dataRef.current = currentData;
 
+                        // Emit PRICE_TICK on EVERY tick (including in-progress candles)
+                        // so PnL display and marketStore update in real time.
+                        EventBus.emit(Events.PRICE_TICK, { price: normalizedCandle.close, time: normalizedCandle.time });
+
                         // Feed every tick to the execution engine for real-time
                         // limit order fills and SL/TP checks. This runs on ALL ticks
                         // (not just closed candles) so fills are immediate and correct.
@@ -1696,6 +1782,11 @@ useImperativeHandle(ref, () => ({
             if (!chartRef.current) return;
             if (result.error) { console.warn(`[PineTS] ${ind.title}:`, result.error); continue; }
 
+            // Sync title back from ctx.indicator.title if it differs from stored title
+            if (result.title && result.title !== ind.title) {
+                useIndicatorStore.getState().upsert({ ...ind, title: result.title });
+            }
+
             const oldSeries = pineSeriesRef.current[ind.id] ?? [];
             for (const s of oldSeries) { try { chartRef.current.removeSeries(s); } catch {} }
 
@@ -1732,7 +1823,7 @@ useImperativeHandle(ref, () => ({
         if (chartRef.current) {
             chartRef.current.applyOptions({
                 crosshair: {
-                    mode: magnetMode ? 1 : 0,
+                    mode: magnetMode ? 3 : 0, // 3=MagnetOHLC snaps to open/high/low/close; 0=Normal
                 },
             });
         }

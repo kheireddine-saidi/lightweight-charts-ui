@@ -18,6 +18,7 @@ import { indicatorFactory } from '../../indicators/registry';
 import { useWorkspaceStore } from '../../features/workspace/WorkspaceStore';
 import { useIndicatorStore, createDefaultIndicator } from '../../stores/indicatorStore';
 import type { UserIndicator } from '../../stores/indicatorStore';
+import type { PineInputDef } from '../../indicators/PineTSRuntime';
 
 const C = {
   bg:'#131722', surface:'#1e222d', elevated:'#2a2e39',
@@ -87,6 +88,74 @@ const AddSection = styled.div`padding:10px 14px; border-top:1px solid ${C.border
 const Select = styled.select`flex:1; background:${C.elevated}; border:1px solid ${C.border}; border-radius:4px; color:${C.text}; font-size:12px; padding:5px 8px; outline:none; cursor:pointer; &:focus{border-color:${C.blue};}`;
 const AddBtn = styled.button`padding:5px 12px; border-radius:4px; border:none; background:${C.blue}; color:#fff; font-size:11px; font-weight:600; cursor:pointer; &:hover{opacity:.85;}`;
 
+const ColorSwatch = styled.div<{$color:string}>`
+  width:22px; height:22px; border-radius:3px; background:${p=>p.$color};
+  border:1px solid rgba(255,255,255,.2); cursor:pointer; flex-shrink:0;
+`;
+
+/* ─── Dynamic input field for Pine Script inputs ─── */
+interface PineInputFieldProps {
+  def: PineInputDef;
+  value: unknown;
+  onChange: (title: string, value: unknown) => void;
+}
+
+const PineInputField: React.FC<PineInputFieldProps> = ({ def, value, onChange }) => {
+  const current = value !== undefined ? value : def.default;
+
+  if (def.type === 'bool') return (
+    <FieldRow>
+      <FieldLabel style={{flex:1}}>{def.title}</FieldLabel>
+      <input type="checkbox" checked={Boolean(current)}
+        onChange={e=>onChange(def.title, e.target.checked)}
+        style={{accentColor:C.blue,width:14,height:14,cursor:'pointer'}}/>
+    </FieldRow>
+  );
+
+  if (def.type === 'color') {
+    const hex = String(current||'#2962ff').startsWith('#') ? String(current) : '#2962ff';
+    return (
+      <FieldRow>
+        <FieldLabel>{def.title}</FieldLabel>
+        <ColorSwatch $color={hex}/>
+        <FInput type="color" value={hex} onChange={e=>onChange(def.title,e.target.value)}
+          style={{flex:1,height:24,padding:'0 2px',background:'transparent',border:'none'}}/>
+      </FieldRow>
+    );
+  }
+
+  if (def.type === 'string' && def.options?.length) return (
+    <FieldRow>
+      <FieldLabel>{def.title}</FieldLabel>
+      <Select value={String(current??def.default??'')} onChange={e=>onChange(def.title,e.target.value)} style={{flex:1}}>
+        {def.options.map(opt=><option key={opt} value={opt}>{opt}</option>)}
+      </Select>
+    </FieldRow>
+  );
+
+  const isNum = def.type==='int'||def.type==='float';
+  return (
+    <FieldRow>
+      <FieldLabel>{def.title}</FieldLabel>
+      <FInput type={isNum?'number':'text'} value={String(current??'')}
+        min={def.minval??undefined} max={def.maxval??undefined}
+        step={def.step??(def.type==='float'?0.1:1)}
+        onChange={e=>onChange(def.title, isNum
+          ? (def.type==='int'?parseInt(e.target.value):parseFloat(e.target.value))
+          : e.target.value)}
+        style={{flex:1}}/>
+      {(def.minval!=null||def.maxval!=null) && (
+        <span style={{fontSize:9,color:C.dim,whiteSpace:'nowrap'}}>
+          {def.minval!=null?`≥${def.minval}`:''}
+          {def.minval!=null&&def.maxval!=null?' ':''}
+          {def.maxval!=null?`≤${def.maxval}`:''}
+        </span>
+      )}
+    </FieldRow>
+  );
+};
+
+/* ─── Available indicators (from factory + display metadata) ─── */
 const BUILTIN_META: Record<string, {label:string; defaultParams:Record<string,unknown>; colors:string[]}> = {
   sma: { label:'SMA', defaultParams:{period:20}, colors:[C.blue] },
   ema: { label:'EMA', defaultParams:{period:20}, colors:[C.orange] },
@@ -107,6 +176,7 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ onClose, onEditSource }
 
   const [editingId, setEditingId] = useState<string|null>(null);
   const [editParams, setEditParams] = useState<Record<string,string>>({});
+  const [userParamValues, setUserParamValues] = useState<Record<string,unknown>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string|null>(null);
   const [selectedBuiltin, setSelectedBuiltin] = useState('sma');
 
@@ -148,15 +218,19 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ onClose, onEditSource }
   const startEditUserParams = (ind: UserIndicator) => {
     setConfirmDeleteId(null);
     setEditingId(`user:${ind.id}`);
-    setEditParams(Object.fromEntries(Object.entries(ind.params).map(([k,v])=>[k,String(v)])));
+    // Build initial values: current saved param > parsed default
+    const initial: Record<string, unknown> = {};
+    for (const def of (ind.parsedInputs ?? [])) {
+      initial[def.title] = ind.params[def.title] !== undefined ? ind.params[def.title] : def.default;
+    }
+    setUserParamValues(initial);
   };
 
   const applyUserParams = () => {
     const id = editingId?.replace('user:','') ?? '';
     const ind = userInds.find(i=>i.id===id);
     if (!ind) return;
-    const params = Object.fromEntries(Object.entries(editParams).map(([k,v])=>[k,isNaN(Number(v))?v:Number(v)]));
-    upsert({...ind, params});
+    upsert({...ind, params: userParamValues});
     setEditingId(null);
   };
 
@@ -245,15 +319,23 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ onClose, onEditSource }
               {isEditing&&(
                 <EditBox>
                   <EditTitle>Edit params — {ind.title}</EditTitle>
-                  {Object.keys(editParams).length === 0 && (
-                    <div style={{color:C.dim,fontSize:11}}>No params defined in source yet.<br/>Use <code style={{color:C.muted}}>input.*</code> in Pine Script to expose params.</div>
+                  {(ind.parsedInputs ?? []).length === 0 ? (
+                    <div style={{color:C.dim,fontSize:11}}>
+                      No inputs defined.<br/>
+                      Use <code style={{color:C.muted}}>input.int()</code>, <code style={{color:C.muted}}>input.float()</code> etc. in your Pine Script to expose params.
+                    </div>
+                  ) : (
+                    (ind.parsedInputs ?? [])
+                      .filter(def => def.type !== 'source' && def.type !== 'timeframe')
+                      .map(def => (
+                        <PineInputField
+                          key={def.title}
+                          def={def}
+                          value={userParamValues[def.title]}
+                          onChange={(title, val) => setUserParamValues(p => ({...p, [title]: val}))}
+                        />
+                      ))
                   )}
-                  {Object.entries(editParams).map(([k,v])=>(
-                    <FieldRow key={k}>
-                      <FieldLabel>{k}</FieldLabel>
-                      <FInput value={v} onChange={e=>setEditParams(p=>({...p,[k]:e.target.value}))}/>
-                    </FieldRow>
-                  ))}
                   <BtnRow>
                     <SaveBtn onClick={applyUserParams}>Apply</SaveBtn>
                     <CancelBtn onClick={()=>setEditingId(null)}>Cancel</CancelBtn>
