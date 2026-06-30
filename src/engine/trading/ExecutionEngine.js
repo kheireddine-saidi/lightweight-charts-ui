@@ -20,6 +20,7 @@
 import { EventBus, Events } from '../../core/EventBus';
 import { FillModel } from './FillModel';
 import { orderIdGenerator } from '../../core/OrderIdGenerator';
+import { validateTPSL } from '../../utils/tpslValidation';
 
 export class ExecutionEngine {
   constructor({ initialBalance = 10_000, fillMode = 'conservative' } = {}) {
@@ -165,16 +166,56 @@ export class ExecutionEngine {
     EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
   }
 
+  /**
+   * Update a position or pending order's fields. TP/SL changes are validated
+   * before being applied — if the new value would trigger an immediate
+   * market execution (wrong side of current price for open positions, or
+   * wrong side of entry price for pending orders), the change is REJECTED
+   * (the field is left unchanged) and a TPSL_REJECTED event is emitted so
+   * any UI surface (PositionsPanel, TradingPanel, chart drag handles) can
+   * show a warning bubble. This is the single chokepoint all SL/TP edits
+   * route through, regardless of which UI triggered them.
+   */
   updatePosition(id, fields) {
     const idx = this.positions.findIndex((p) => p.id === id);
     if (idx !== -1) {
-      this.positions[idx] = { ...this.positions[idx], ...fields };
+      const pos = this.positions[idx];
+      const safeFields = this._validateAndFilterTPSL(pos, fields, 'open', this._prevPrice ?? pos.entryPrice);
+      this.positions[idx] = { ...pos, ...safeFields };
       return;
     }
     const oidx = this.pendingOrders.findIndex((p) => p.id === id);
     if (oidx !== -1) {
-      this.pendingOrders[oidx] = { ...this.pendingOrders[oidx], ...fields };
+      const order = this.pendingOrders[oidx];
+      const safeFields = this._validateAndFilterTPSL(order, fields, 'pending', order.entryPrice);
+      this.pendingOrders[oidx] = { ...order, ...safeFields };
     }
+  }
+
+  /**
+   * Filters a fields update, dropping stopLoss/takeProfit values that would
+   * be invalid (would trigger an immediate market execution). Emits
+   * TPSL_REJECTED for each rejected field so the UI can surface a warning.
+   */
+  _validateAndFilterTPSL(current, fields, status, refPrice) {
+    if (fields.stopLoss === undefined && fields.takeProfit === undefined) {
+      return fields; // nothing TP/SL related to validate
+    }
+    const nextTP = fields.takeProfit !== undefined ? fields.takeProfit : current.takeProfit ?? null;
+    const nextSL = fields.stopLoss   !== undefined ? fields.stopLoss   : current.stopLoss   ?? null;
+    const result = validateTPSL(current.side, status, refPrice, nextTP, nextSL);
+
+    if (result.valid) return fields;
+
+    // Reject only the offending field — keep the other field's change if it was valid.
+    const filtered = { ...fields };
+    if (result.field === 'tp') delete filtered.takeProfit;
+    if (result.field === 'sl') delete filtered.stopLoss;
+
+    EventBus.emit(Events.TPSL_REJECTED, {
+      id: current.id, field: result.field, message: result.message,
+    });
+    return filtered;
   }
 
   closePosition(id, closePrice, closeTime) {

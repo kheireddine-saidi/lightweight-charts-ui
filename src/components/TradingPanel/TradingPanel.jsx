@@ -6,6 +6,7 @@ import { useMarketStore } from '../../stores/marketStore';
 import { useTradeSetupStore } from '../../stores/tradeSetupStore';
 import { useWorkspaceStore } from '../../features/workspace/WorkspaceStore';
 import { EventBus, Events } from '../../core/EventBus';
+import { validateTPSL } from '../../utils/tpslValidation';
 
 /* ─── Design tokens ─── */
 const C = {
@@ -148,6 +149,32 @@ const TPSLGrid = styled.div`
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
 `;
 
+const FieldWrap = styled.div`
+  position: relative;
+`;
+
+const WarningBubble = styled.div`
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0; right: 0;
+  background: ${C.surface};
+  border: 1px solid ${C.red};
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 11px;
+  color: ${C.text};
+  box-shadow: 0 6px 18px rgba(0,0,0,.5);
+  z-index: 50;
+  &::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 24px;
+    border: 6px solid transparent;
+    border-top-color: ${C.red};
+  }
+`;
+
 const RRBadge = styled.div`
   border-radius: 4px; padding: 6px 10px; font-size: 11px;
   display: flex; justify-content: space-between; align-items: center;
@@ -197,6 +224,8 @@ const TradingPanel = ({ currentTime }) => {
   const [slider, setSlider]         = useState(0);
   const [stopLoss, setStopLoss]     = useState('');
   const [takeProfit, setTakeProfit] = useState('');
+  const [tpWarning, setTpWarning]   = useState(null);
+  const [slWarning, setSlWarning]   = useState(null);
   const [fromSetup, setFromSetup]   = useState(false);
   const [pendingZoneId, setPendingZoneId] = useState(null);
   const [prevPrice, setPrevPrice]   = useState(null);
@@ -237,6 +266,15 @@ const TradingPanel = ({ currentTime }) => {
   const tpNum         = takeProfit ? parseFloat(takeProfit) : null;
   const riskAmt       = slNum ? Math.abs(entryPrice - slNum)  * positionSize * leverage : null;
   const rewardAmt     = tpNum ? Math.abs(tpNum - entryPrice)  * positionSize * leverage : null;
+
+  // ── TP/SL validation ──────────────────────────────────────────────────
+  // The order's side (long/short) isn't known until Buy/Long or Sell/Short
+  // is clicked, so real validation happens inside handleOrder (below) once
+  // side is known. tpWarning/slWarning surface the result as a bubble.
+  // Market orders open immediately at currentPrice → validate against currentPrice.
+  // Limit orders sit pending until filled → validate against entry/limit price.
+  const refPriceForValidation = orderType === 'market' ? currentPrice : (entryPrice || currentPrice);
+  const validationStatus = orderType === 'market' ? 'open' : 'pending';
   const riskPct       = riskAmt && freeMargin > 0 ? (riskAmt / freeMargin) * 100 : null;
   const rrRatio       = riskAmt && rewardAmt ? rewardAmt / riskAmt : null;
   const riskLevel     = riskPct == null ? 'low' : riskPct > 5 ? 'high' : riskPct > 2 ? 'med' : 'low';
@@ -267,6 +305,24 @@ const TradingPanel = ({ currentTime }) => {
     if (!quoteSizeNum || quoteSizeNum <= 0) return;
     if (requiredMargin > freeMargin + 0.001) return;
 
+    // ── Validate TP/SL before placing ──────────────────────────────────
+    // Now that `side` is known (long/short), check whether the entered TP/SL
+    // would trigger an immediate market exit/entry. If so, reject the order
+    // placement entirely and show a warning bubble instead of silently
+    // ignoring just the bad field — placing an order with a structurally
+    // wrong TP/SL is worse than not placing it at all.
+    const refPrice = orderType === 'market' ? currentPrice : (entryPrice || currentPrice);
+    const status = orderType === 'market' ? 'open' : 'pending';
+    const result = validateTPSL(side, status, refPrice, tpNum, slNum);
+    if (!result.valid) {
+      if (result.field === 'tp') setTpWarning(result.message);
+      else if (result.field === 'sl') setSlWarning(result.message);
+      // Auto-clear the warning after a few seconds, matching EditablePrice's bubble.
+      setTimeout(() => { setTpWarning(null); setSlWarning(null); }, 3500);
+      return; // ignore the requested order placement
+    }
+    setTpWarning(null); setSlWarning(null);
+
     const positionId = openPosition({
       side,
       type:          orderType,
@@ -293,7 +349,7 @@ const TradingPanel = ({ currentTime }) => {
     if (orderType === 'limit') setLimitPrice('');
     setQuoteSize(''); setSlider(0);
   }, [orderType, quoteSizeNum, positionSize, limitPrice, leverage, requiredMargin, freeMargin,
-      slNum, tpNum, currentTime, currentPrice, openPosition, pendingZoneId]);
+      slNum, tpNum, currentTime, currentPrice, entryPrice, openPosition, pendingZoneId]);
 
   const cantPlace = !quoteSizeNum || requiredMargin > freeMargin + 0.001
     || (orderType === 'limit' && !limitPrice);
@@ -402,17 +458,23 @@ const TradingPanel = ({ currentTime }) => {
         <TPSLGrid>
           <FieldGroup>
             <FieldLabel>Take Profit</FieldLabel>
-            <InputRow>
-              <Inp type="number" step="0.00001" placeholder="Price"
-                value={takeProfit} onChange={e => setTakeProfit(e.target.value)}/>
-            </InputRow>
+            <FieldWrap>
+              {tpWarning && <WarningBubble>⚠ {tpWarning}</WarningBubble>}
+              <InputRow>
+                <Inp type="number" step="0.00001" placeholder="Price"
+                  value={takeProfit} onChange={e => { setTakeProfit(e.target.value); setTpWarning(null); }}/>
+              </InputRow>
+            </FieldWrap>
           </FieldGroup>
           <FieldGroup>
             <FieldLabel>Stop Loss</FieldLabel>
-            <InputRow>
-              <Inp type="number" step="0.00001" placeholder="Price"
-                value={stopLoss} onChange={e => setStopLoss(e.target.value)}/>
-            </InputRow>
+            <FieldWrap>
+              {slWarning && <WarningBubble>⚠ {slWarning}</WarningBubble>}
+              <InputRow>
+                <Inp type="number" step="0.00001" placeholder="Price"
+                  value={stopLoss} onChange={e => { setStopLoss(e.target.value); setSlWarning(null); }}/>
+              </InputRow>
+            </FieldWrap>
           </FieldGroup>
         </TPSLGrid>
 

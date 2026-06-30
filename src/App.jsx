@@ -327,7 +327,16 @@ function App() {
       const activeId = Object.keys(chartRefs.current)[0];
       if (activeId) chartRefs.current[activeId]?.scrollToTime?.(time);
     });
-    return () => { unsubDrawn(); unsubLink(); unsubFilled(); unsubCancelled(); unsubClosed(); unsubScroll(); };
+    // Invalid TP/SL modification (e.g. dragging a chart zone's TP/SL line
+    // to a position that would trigger an immediate market execution) —
+    // the engine already rejected the change; surface why via toast.
+    const unsubTpslRejected = EventBus.on(Events.TPSL_REJECTED, ({ message }) => {
+      if (message) showToast(message, 'error');
+    });
+    return () => {
+      unsubDrawn(); unsubLink(); unsubFilled(); unsubCancelled();
+      unsubClosed(); unsubScroll(); unsubTpslRejected();
+    };
   }, []);
 
   const getCurrentTime = useCallback(() => {

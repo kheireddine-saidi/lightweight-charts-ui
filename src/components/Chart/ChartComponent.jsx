@@ -12,6 +12,7 @@ import styles from './ChartComponent.module.css';
 import { binanceLiveFeed as binanceLiveFeedSingleton } from '../../feeds/BinanceLiveFeed';
 import { EventBus, Events } from '../../core/EventBus';
 import { calculateHeikinAshi } from '../../utils/chartUtils';
+import { snapToOHLC } from '../../utils/magnetSnap';
 import { IndicatorRegistry, INDICATOR_CONSTRUCTORS } from '../../indicators/registry';
 import { executionEngine } from '../../engine/trading/ExecutionEngine';
 import { useIndicatorStore } from '../../stores/indicatorStore';
@@ -93,6 +94,18 @@ const ChartComponent = forwardRef(({
     // Fallback to live feed if no feed prop provided (backward compat)
     const activeFeed = feed ?? binanceLiveFeedSingleton;
     const activeFeedRef = useRef(activeFeed);
+
+    // ── Magnet mode tracking refs ───────────────────────────────────────────
+    // magnetModeRef: always-current copy of the magnetMode prop, readable from
+    //   inside the coordinateToPrice wrapper (which is set up once and must not
+    //   capture a stale closure of magnetMode).
+    // magnetLastLogicalRef: continuously updated logical X index of the cursor,
+    //   tracked via subscribeCrosshairMove. The bundled LineToolManager plugin's
+    //   coordinateToPrice(y) call has no X parameter, so this is how the magnet
+    //   wrapper knows WHICH candle's OHLC to snap against.
+    const magnetModeRef = useRef(magnetMode);
+    useEffect(() => { magnetModeRef.current = magnetMode; }, [magnetMode]);
+    const magnetLastLogicalRef = useRef(null);
     useEffect(() => { activeFeedRef.current = activeFeed; }, [activeFeed]);
 
     const chartContainerRef = useRef();
@@ -1108,6 +1121,35 @@ useImperativeHandle(ref, () => ({
         if (!lineToolManagerRef.current) {
             const manager = new LineToolManager();
 
+            // ── Magnet-aware coordinateToPrice wrapper ─────────────────────
+            // The bundled LineToolManager plugin (third-party, pre-minified)
+            // reads price purely via `this.series.coordinateToPrice(y)` for
+            // every point placement and drag operation. It has no public hook
+            // for custom coordinate transforms, and LightweightCharts itself
+            // does NOT expose magnet-snapped coordinates through any public
+            // API — the snapping (`Magnet._internal_align`) is a private
+            // internal used only to draw the crosshair line. So drawing tools
+            // built on the public API (ours included) never see snapped values
+            // unless we replicate the snap ourselves and inject it here.
+            //
+            // We wrap the series' coordinateToPrice so every caller — including
+            // every call inside the bundled plugin — transparently receives the
+            // OHLC-snapped price when magnetMode is active.
+            if (!series.__originalCoordinateToPrice) {
+                series.__originalCoordinateToPrice = series.coordinateToPrice.bind(series);
+                series.coordinateToPrice = (y) => {
+                    const rawPrice = series.__originalCoordinateToPrice(y);
+                    if (rawPrice == null || !magnetModeRef.current) return rawPrice;
+                    const data = fullDataRef.current;
+                    // coordinateToPrice(y) has no X parameter, so we rely on
+                    // magnetLastLogicalRef — kept continuously up to date by the
+                    // chart's subscribeCrosshairMove handler (see chart-init effect).
+                    const idx = magnetLastLogicalRef.current;
+                    if (!data?.length || idx == null) return rawPrice;
+                    return snapToOHLC(rawPrice, idx, data, true);
+                };
+            }
+
             // Wrap startTool to detect when tool is cancelled/finished
             const originalStartTool = manager.startTool.bind(manager);
             manager.startTool = (tool) => {
@@ -1377,6 +1419,19 @@ useImperativeHandle(ref, () => ({
         // Subscribe to logical range changes for both price-scale label updates and pagination
         chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleWithPagination);
 
+        // Track the cursor's logical X index continuously. The bundled
+        // LineToolManager plugin's coordinateToPrice(y) wrapper (see
+        // initializeLineTools) has no X parameter available to it, so this is
+        // how it knows which candle's OHLC to snap against for magnet mode.
+        const handleCrosshairForMagnet = (param) => {
+            if (param?.point?.x != null) {
+                try {
+                    magnetLastLogicalRef.current = chart.timeScale().coordinateToLogical(param.point.x);
+                } catch { /* noop */ }
+            }
+        };
+        chart.subscribeCrosshairMove(handleCrosshairForMagnet);
+
         // Handle right-click to cancel tool
         const handleContextMenu = (event) => {
             event.preventDefault(); // Prevent default right-click menu
@@ -1390,6 +1445,8 @@ useImperativeHandle(ref, () => ({
         return () => {
             // Abort any in-flight pagination fetch
             paginationAbortController.abort();
+
+            try { chart.unsubscribeCrosshairMove(handleCrosshairForMagnet); } catch {}
 
             // Clean up global window references to prevent memory leaks
             if (import.meta.env.DEV) {
@@ -2620,7 +2677,8 @@ useEffect(() => {
                 chartApi={chartRef.current}
                 seriesApi={mainSeriesRef.current}
                 active={activeTool === 'trade_setup'}
-                dataRef={fullDataRef}
+                dataRef={dataRef}
+                magnetMode={magnetMode}
                 zones={committedTradeZones}
                 onZonesChange={setCommittedTradeZones}
                 onDone={() => {

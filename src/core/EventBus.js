@@ -38,6 +38,7 @@ export const Events = Object.freeze({
   SCROLL_TO_TIME:  'SCROLL_TO_TIME',
   PRICE_TICK:      'PRICE_TICK',
   EQUITY_TICK:     'EQUITY_TICK',
+  TPSL_REJECTED:   'TPSL_REJECTED',
 
   /** Account balance changed. payload: { balance, equity, change } */
   BALANCE_CHANGED: 'BALANCE_CHANGED',

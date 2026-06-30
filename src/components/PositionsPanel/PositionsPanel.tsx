@@ -4,6 +4,8 @@ import styled from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
 import TradeJournal from '../Journal/TradeJournal';
+import EditablePrice from '../shared/EditablePrice';
+import { validateTPSL } from '../../utils/tpslValidation';
 
 /* ─── Design tokens ─── */
 const C = {
@@ -219,6 +221,8 @@ const OpenTab = () => {
   const pendingOrders = useTradingStore((s) => s.pendingOrders);
   const closePosition = useTradingStore((s) => s.closePosition);
   const cancelPendingOrder = useTradingStore((s) => s.cancelPendingOrder);
+  const updatePosition = useTradingStore((s) => s.updatePosition);
+  const updatePendingOrder = useTradingStore((s) => s.updatePendingOrder);
   const currentPrice = useMarketStore((s) => s.currentPrice);
 
   const allItems = [...positions, ...pendingOrders];
@@ -266,7 +270,15 @@ const OpenTab = () => {
                   <TD style={{ color: C.text, fontWeight: 500 }}>{pos.symbol}</TD>
                   <TD>{pos.positionSize}</TD>
                   <TD>{pos.leverage}×</TD>
-                  <TD>{fmt(pos.entryPrice)}</TD>
+                  <TD>
+                    {/* Entry is locked for open positions — cannot be changed after fill */}
+                    <EditablePrice
+                      value={pos.entryPrice}
+                      locked
+                      onValidate={() => ({ valid: false, message: null })}
+                      onCommit={() => {}}
+                    />
+                  </TD>
                   <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
                   <TD>
                     <PnLCell $val={pnl}>
@@ -276,10 +288,26 @@ const OpenTab = () => {
                       </span>
                     </PnLCell>
                   </TD>
-                  <TD style={{ color: C.textMuted }}>
-                    {pos.stopLoss ? <span style={{ color: C.red }}>{fmt(pos.stopLoss)}</span> : '—'}
+                  <TD style={{ color: C.textMuted, whiteSpace: 'nowrap' }}>
+                    <EditablePrice
+                      value={pos.stopLoss}
+                      color={C.red}
+                      onValidate={(newVal) => {
+                        const r = validateTPSL(pos.side, 'open', currentPrice, pos.takeProfit ?? null, newVal);
+                        return { valid: r.valid || r.field !== 'sl', message: r.field === 'sl' ? r.message : null };
+                      }}
+                      onCommit={(newVal) => updatePosition(pos.id, { stopLoss: newVal })}
+                    />
                     {' / '}
-                    {pos.takeProfit ? <span style={{ color: C.green }}>{fmt(pos.takeProfit)}</span> : '—'}
+                    <EditablePrice
+                      value={pos.takeProfit}
+                      color={C.green}
+                      onValidate={(newVal) => {
+                        const r = validateTPSL(pos.side, 'open', currentPrice, newVal, pos.stopLoss ?? null);
+                        return { valid: r.valid || r.field !== 'tp', message: r.field === 'tp' ? r.message : null };
+                      }}
+                      onCommit={(newVal) => updatePosition(pos.id, { takeProfit: newVal })}
+                    />
                   </TD>
                   <TD style={{ color: C.textMuted, fontSize: 11 }}>
                     {formatDateTime(pos.filledTime ?? pos.entryTime)}
@@ -299,13 +327,38 @@ const OpenTab = () => {
                 <TD style={{ color: C.text, fontWeight: 500 }}>{order.symbol}</TD>
                 <TD>{order.positionSize}</TD>
                 <TD>{order.leverage}×</TD>
-                <TD style={{ color: C.orange }}>{fmt(order.entryPrice)}</TD>
+                <TD>
+                  {/* Entry IS editable for pending (not-yet-filled) orders */}
+                  <EditablePrice
+                    value={order.entryPrice}
+                    color={C.orange}
+                    onValidate={() => ({ valid: true, message: null })}
+                    onCommit={(newVal) => updatePendingOrder(order.id, { entryPrice: newVal, limitPrice: newVal })}
+                  />
+                </TD>
                 <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
                 <TD style={{ color: C.textDim }}>—</TD>
-                <TD style={{ color: C.textMuted }}>
-                  {order.stopLoss ? <span style={{ color: C.red }}>{fmt(order.stopLoss)}</span> : '—'}
+                <TD style={{ color: C.textMuted, whiteSpace: 'nowrap' }}>
+                  {/* Pending orders: SL/TP validated against the order's ENTRY price, not market */}
+                  <EditablePrice
+                    value={order.stopLoss}
+                    color={C.red}
+                    onValidate={(newVal) => {
+                      const r = validateTPSL(order.side, 'pending', order.entryPrice, order.takeProfit ?? null, newVal);
+                      return { valid: r.valid || r.field !== 'sl', message: r.field === 'sl' ? r.message : null };
+                    }}
+                    onCommit={(newVal) => updatePendingOrder(order.id, { stopLoss: newVal })}
+                  />
                   {' / '}
-                  {order.takeProfit ? <span style={{ color: C.green }}>{fmt(order.takeProfit)}</span> : '—'}
+                  <EditablePrice
+                    value={order.takeProfit}
+                    color={C.green}
+                    onValidate={(newVal) => {
+                      const r = validateTPSL(order.side, 'pending', order.entryPrice, newVal, order.stopLoss ?? null);
+                      return { valid: r.valid || r.field !== 'tp', message: r.field === 'tp' ? r.message : null };
+                    }}
+                    onCommit={(newVal) => updatePendingOrder(order.id, { takeProfit: newVal })}
+                  />
                 </TD>
                 <TD style={{ color: C.textMuted, fontSize: 11 }}>
                   Pending — {formatDateTime(order.entryTime)}

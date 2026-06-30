@@ -19,6 +19,7 @@ import React, {
 import { useTradeSetupStore } from '../../stores/tradeSetupStore';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
+import { getMagnetPoint } from '../../utils/magnetSnap';
 
 const RR_RATIO = 2;
 
@@ -61,6 +62,8 @@ const TradeSetupTool = ({
   onZonesChange,
   onDone,
   onCancel,
+  dataRef,
+  magnetMode,
 }) => {
   // ── drawing ───────────────────────────────────────────────────────────────
   const [phase, setPhase] = useState('idle');
@@ -133,6 +136,20 @@ const TradeSetupTool = ({
   }, [chartApi, seriesApi, tick]);
 
   // ── apply drag delta to a zone clone ────────────────────────────────────
+  // Magnet-aware Y→price helper for drag operations: snaps to the nearest
+  // OHLC value of the candle under the given X pixel, same algorithm as the
+  // live cursor (see utils/magnetSnap.js — LWC doesn't expose this snapping
+  // through any public drag/coordinate API, so we replicate it ourselves).
+  const magnetYToPrice = useCallback((x, y) => {
+    const rawPrice = yToPrice(y, seriesApi);
+    if (rawPrice == null) return null;
+    const data = dataRef?.current;
+    if (!data?.length || !magnetMode) return rawPrice;
+    const logical = xToLogical(x, chartApi);
+    if (logical == null) return rawPrice;
+    return getMagnetPoint(x, y, chartApi, seriesApi, data, magnetMode).price ?? rawPrice;
+  }, [seriesApi, chartApi, dataRef, magnetMode]);
+
   const applyDrag = useCallback((zone, handle, dx, dy, g) => {
     // Closed positions: nothing can be adjusted
     if (zone.status === 'closed') return zone;
@@ -142,25 +159,25 @@ const TradeSetupTool = ({
 
     if (handle === 'entry_line' && !isFilled) {
       const newY = g.entryY + dy;
-      entryPrice = roundPrice(yToPrice(newY, seriesApi)) ?? entryPrice;
+      entryPrice = roundPrice(magnetYToPrice(g.x1, newY)) ?? entryPrice;
       // Do NOT recompute tpPrice — user has placed it explicitly; just show new R
     } else if (handle === 'sl_line') {
       const newY = g.slY + dy;
-      slPrice = roundPrice(yToPrice(newY, seriesApi)) ?? slPrice;
+      slPrice = roundPrice(magnetYToPrice(g.x2, newY)) ?? slPrice;
       // Do NOT recompute tpPrice — ratio is displayed dynamically, not enforced
     } else if (handle === 'tp_line') {
-      tpPrice = roundPrice(yToPrice(g.tpY + dy, seriesApi)) ?? tpPrice;
+      tpPrice = roundPrice(magnetYToPrice(g.x1, g.tpY + dy)) ?? tpPrice;
     } else if (handle === 'body') {
       if (isFilled) {
         // Entry is locked after fill — only shift SL and TP vertically.
         // This keeps the entry price fixed while allowing risk adjustment.
-        slPrice = roundPrice(yToPrice(g.slY + dy, seriesApi)) ?? slPrice;
-        tpPrice = roundPrice(yToPrice(g.tpY + dy, seriesApi)) ?? tpPrice;
+        slPrice = roundPrice(magnetYToPrice(g.x2, g.slY + dy)) ?? slPrice;
+        tpPrice = roundPrice(magnetYToPrice(g.x1, g.tpY + dy)) ?? tpPrice;
       } else {
         // Pre-order: shift all three prices together (same delta)
-        entryPrice = roundPrice(yToPrice(g.entryY + dy, seriesApi)) ?? entryPrice;
-        slPrice    = roundPrice(yToPrice(g.slY    + dy, seriesApi)) ?? slPrice;
-        tpPrice    = roundPrice(yToPrice(g.tpY    + dy, seriesApi)) ?? tpPrice;
+        entryPrice = roundPrice(magnetYToPrice(g.x1, g.entryY + dy)) ?? entryPrice;
+        slPrice    = roundPrice(magnetYToPrice(g.x2, g.slY    + dy)) ?? slPrice;
+        tpPrice    = roundPrice(magnetYToPrice(g.x1, g.tpY    + dy)) ?? tpPrice;
         // Also shift the horizontal position of the box (item 7: preserve width)
         entryLogicalX = xToLogical(g.x1 + dx, chartApi) ?? entryLogicalX;
         slLogicalX    = xToLogical(g.x2 + dx, chartApi) ?? slLogicalX;
@@ -173,7 +190,7 @@ const TradeSetupTool = ({
 
     const side = entryPrice > slPrice ? 'long' : 'short';
     return { ...zone, entryPrice, slPrice, tpPrice, entryLogicalX, slLogicalX, side };
-  }, [seriesApi, chartApi]);
+  }, [chartApi, magnetYToPrice]);
 
   // ── sync drag result to trading store + trading panel ───────────────────
   const syncZoneToOrder = useCallback((zone) => {
@@ -256,12 +273,13 @@ const TradeSetupTool = ({
     }
   }, [active]);
 
-  // ── drawing: track the chart's crosshair position (passive, no capture) ──
-  // CRITICAL: We read price/time from the chart's own crosshair via
-  // subscribeCrosshairMove(), NOT from raw mouse coordinates. This is what
-  // makes magnet mode (CrosshairMode.MagnetOHLC) work correctly — LWC snaps
-  // the crosshair to the nearest open/high/low/close internally, and our
-  // drawing tool must draw at that snapped point, not the literal cursor pixel.
+  // ── drawing: track cursor position with magnet-aware price snapping ──────
+  // IMPORTANT: chart.subscribeCrosshairMove()'s param.point is the RAW mouse
+  // pixel position — LWC does NOT expose the magnet-snapped price/coordinate
+  // through any public API. The snapping only happens internally for drawing
+  // the crosshair line itself. So we must replicate the MagnetOHLC algorithm
+  // ourselves (see utils/magnetSnap.js) using the same candle data the chart
+  // is displaying, and apply it to the y-derived price before using it.
   useEffect(() => {
     if (!active || !chartApi || !seriesApi || !containerRef?.current) return;
 
@@ -270,21 +288,28 @@ const TradeSetupTool = ({
         setLiveCursor(null);
         return;
       }
-      // param.point.x/y are already the magnet-snapped pixel coordinates when
-      // CrosshairMode.MagnetOHLC is active — LWC handles the snapping for us.
       const { x, y } = param.point;
-      const price = seriesApi.coordinateToPrice(y);
+      const rawPrice = seriesApi.coordinateToPrice(y);
       const logical = xToLogical(x, chartApi);
-      if (price != null) {
-        setLiveCursor({ x, y, logicalX: logical ?? (x / dims.w) * 1000, price });
-      }
+      if (rawPrice == null) return;
+
+      const data = dataRef?.current;
+      const snappedPrice = data?.length
+        ? getMagnetPoint(x, y, chartApi, seriesApi, data, magnetMode).price
+        : rawPrice;
+
+      setLiveCursor({
+        x, y,
+        logicalX: logical ?? (x / dims.w) * 1000,
+        price: snappedPrice ?? rawPrice,
+      });
     };
 
     chartApi.subscribeCrosshairMove(onCrosshairMove);
     return () => {
       try { chartApi.unsubscribeCrosshairMove(onCrosshairMove); } catch {}
     };
-  }, [active, chartApi, seriesApi, containerRef, dims.w]);
+  }, [active, chartApi, seriesApi, containerRef, dims.w, dataRef, magnetMode]);
 
   // ── drawing: mousedown on container (capture, only in active mode) ────────
   // Click 1: set entry; Click 2: set SL and commit zone.
@@ -497,7 +522,12 @@ const TradeSetupTool = ({
       <g>
         {/* ── Invisible wide body click area ─────── */}
         {/* Filled zones: click-to-select only (no drag). Pre-order zones: full drag. Closed: click only. */}
-        {!isLive && !isFilled && !isClosed && (
+        {/* CRITICAL: gated on !isActiveTool — when any drawing tool is active (including
+            this same trade_setup tool while drawing a NEW box), this rect must not exist
+            at all, otherwise its onMouseDown swallows the click before the container's
+            own draw-mode mousedown handler (registered with capture:true) can act on it,
+            and the zone gets selected/dragged instead of a new box being started. */}
+        {!isLive && !isFilled && !isClosed && !isActiveTool && (
           <rect
             x={left} y={Math.min(tpY, slY)}
             width={width} height={Math.abs(slY - tpY)}
@@ -513,7 +543,7 @@ const TradeSetupTool = ({
             }}
           />
         )}
-        {!isLive && (isFilled || isClosed) && (
+        {!isLive && (isFilled || isClosed) && !isActiveTool && (
           <rect
             x={left} y={Math.min(tpY, slY)}
             width={width} height={Math.abs(slY - tpY)}
