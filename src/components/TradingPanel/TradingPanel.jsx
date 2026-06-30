@@ -201,7 +201,7 @@ const TradingPanel = ({ currentTime }) => {
   const [pendingZoneId, setPendingZoneId] = useState(null);
   const [prevPrice, setPrevPrice]   = useState(null);
 
-  const { openPosition, balance, reservedMargin = 0 } = useTradingStore();
+  const { openPosition, balance, equity, reservedMargin = 0 } = useTradingStore();
   const currentPrice   = useMarketStore(s => s.currentPrice);
   const tradeSetup     = useTradeSetupStore(s => s);
   const symbol         = useWorkspaceStore(s => s.getActiveChart()?.symbol ?? 'BTCUSDT');
@@ -454,6 +454,12 @@ const TradingPanel = ({ currentTime }) => {
           <BalLabel>Free margin</BalLabel>
           <BalVal $color={freeMargin < balance * 0.2 ? C.red : C.green}>
             {freeMargin.toFixed(2)} USDT
+          </BalVal>
+        </BalRow>
+        <BalRow>
+          <BalLabel>Equity</BalLabel>
+          <BalVal $color={equity >= balance ? C.green : C.red}>
+            {equity.toFixed(2)} USDT
           </BalVal>
         </BalRow>
         <BalRow>

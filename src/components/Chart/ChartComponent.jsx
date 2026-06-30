@@ -1298,6 +1298,9 @@ useImperativeHandle(ref, () => ({
         let isLoadingMore = false;
         let noMoreHistory = false;
         let dinoMarkerId = null;
+        // Dedicated abort controller for pagination fetches — separate from the
+        // data-loading effect's controller since this lives in the chart-init effect.
+        const paginationAbortController = new AbortController();
 
         const loadMoreHistory = async (logicalFrom) => {
             if (isLoadingMore || noMoreHistory || isReplayModeRef.current) return;
@@ -1315,7 +1318,7 @@ useImperativeHandle(ref, () => ({
                 if (!feed || typeof feed.loadHistoryBefore !== 'function') return;
 
                 const olderCandles = await feed.loadHistoryBefore(
-                    symbol, interval, endTimeMs, 500, abortController.signal
+                    symbol, interval, endTimeMs, 500, paginationAbortController.signal
                 );
 
                 if (!olderCandles?.length) {
@@ -1385,6 +1388,9 @@ useImperativeHandle(ref, () => ({
         container.addEventListener('contextmenu', handleContextMenu, true);
 
         return () => {
+            // Abort any in-flight pagination fetch
+            paginationAbortController.abort();
+
             // Clean up global window references to prevent memory leaks
             if (import.meta.env.DEV) {
             window.lineToolManager = null;

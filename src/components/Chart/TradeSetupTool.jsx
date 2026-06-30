@@ -256,25 +256,35 @@ const TradeSetupTool = ({
     }
   }, [active]);
 
-  // ── drawing: mousemove on container (passive, no capture) ────────────────
-  // Only used during active drawing to show the live preview.
+  // ── drawing: track the chart's crosshair position (passive, no capture) ──
+  // CRITICAL: We read price/time from the chart's own crosshair via
+  // subscribeCrosshairMove(), NOT from raw mouse coordinates. This is what
+  // makes magnet mode (CrosshairMode.MagnetOHLC) work correctly — LWC snaps
+  // the crosshair to the nearest open/high/low/close internally, and our
+  // drawing tool must draw at that snapped point, not the literal cursor pixel.
   useEffect(() => {
-    if (!active || !containerRef?.current) return;
-    const el = containerRef.current;
-    const onMove = (e) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+    if (!active || !chartApi || !seriesApi || !containerRef?.current) return;
+
+    const onCrosshairMove = (param) => {
+      if (!param?.point || param.point.x == null || param.point.y == null) {
+        setLiveCursor(null);
+        return;
+      }
+      // param.point.x/y are already the magnet-snapped pixel coordinates when
+      // CrosshairMode.MagnetOHLC is active — LWC handles the snapping for us.
+      const { x, y } = param.point;
+      const price = seriesApi.coordinateToPrice(y);
       const logical = xToLogical(x, chartApi);
-      const price   = yToPrice(y, seriesApi);
       if (price != null) {
         setLiveCursor({ x, y, logicalX: logical ?? (x / dims.w) * 1000, price });
       }
     };
-    el.addEventListener('mousemove', onMove, { passive: true });
-    return () => el.removeEventListener('mousemove', onMove);
-  }, [active, containerRef, chartApi, seriesApi, dims.w]);
+
+    chartApi.subscribeCrosshairMove(onCrosshairMove);
+    return () => {
+      try { chartApi.unsubscribeCrosshairMove(onCrosshairMove); } catch {}
+    };
+  }, [active, chartApi, seriesApi, containerRef, dims.w]);
 
   // ── drawing: mousedown on container (capture, only in active mode) ────────
   // Click 1: set entry; Click 2: set SL and commit zone.
@@ -284,13 +294,13 @@ const TradeSetupTool = ({
 
     const onDown = (e) => {
       if (e.button !== 0) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const logical = xToLogical(x, chartApi);
-      const price   = yToPrice(y, seriesApi);
-      if (price == null) return;
-      const logX = logical ?? (x / dims.w) * 1000;
+      // Use the magnet-aware snapped cursor (from the chart's own crosshair),
+      // not a raw recomputation from mouse pixel position. liveCursor is kept
+      // in sync by the subscribeCrosshairMove effect above and already
+      // reflects OHLC snapping when magnet mode is active.
+      if (!liveCursor || liveCursor.price == null) return;
+      const price = liveCursor.price;
+      const logX  = liveCursor.logicalX;
 
       if (phaseRef.current === 'idle') {
         entrySnapRef.current = { logicalX: logX, price };
@@ -339,7 +349,7 @@ const TradeSetupTool = ({
 
     el.addEventListener('mousedown', onDown, { capture: true });
     return () => el.removeEventListener('mousedown', onDown, { capture: true });
-  }, [active, containerRef, chartApi, seriesApi, dims.w, onZonesChange, onDone, onCancel]);
+  }, [active, containerRef, chartApi, seriesApi, dims.w, onZonesChange, onDone, onCancel, liveCursor]);
 
   // ── Escape ─────────────────────────────────────────────────────────────────
   useEffect(() => {

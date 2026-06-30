@@ -63,11 +63,13 @@ export class ExecutionEngine {
 
     // 1. Check pending orders (fills happen immediately when price crosses limit)
     const stillPending = [];
+    let anyOrderFilled = false;
     for (const order of this.pendingOrders) {
       const fillPrice = this._fillModel.checkTickFill(price, prev, order);
       if (fillPrice !== null) {
         const filled = { ...order, status: 'open', filledTime: now, entryPrice: fillPrice };
         this.positions.push(filled);
+        anyOrderFilled = true;
         EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: now });
         EventBus.emit(Events.POSITION_OPENED, { position: filled });
       } else {
@@ -75,6 +77,11 @@ export class ExecutionEngine {
       }
     }
     this.pendingOrders = stillPending;
+    // Notify immediately so the pending-orders list (UI) and margin display
+    // refresh the instant a fill happens — not on the next unrelated event.
+    if (anyOrderFilled) {
+      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+    }
 
     // 2. Check SL/TP on open positions (same tick — fill just happened on previous loop)
     const toClose = [];
@@ -94,6 +101,10 @@ export class ExecutionEngine {
 
     this._prevPrice = price;
     this._updateEquity(price);
+    // Lightweight per-tick notification — only equity changes (unrealised PnL),
+    // not balance/reservedMargin. Kept separate from BALANCE_CHANGED so we don't
+    // spam the heavier "things actually changed" semantics on every single tick.
+    EventBus.emit(Events.EQUITY_TICK, { equity: this.equity });
   }
 
   // ─── Order management ─────────────────────────────────────────────────────
@@ -134,10 +145,12 @@ export class ExecutionEngine {
       }
       this.pendingOrders.push(pos);
       this.reservedMargin += (pos.requiredMargin ?? 0);
+      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
     } else {
       this.positions.push(pos);
       this.reservedMargin += (pos.requiredMargin ?? 0);
       EventBus.emit(Events.POSITION_OPENED, { position: pos });
+      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
     }
 
     EventBus.emit(Events.ORDER_CREATED, { order: pos });
@@ -179,16 +192,19 @@ export class ExecutionEngine {
     this._checkSLTPCandle(candle);
     this._updateEquity(candle.close);
     this._prevPrice = candle.close;
+    EventBus.emit(Events.EQUITY_TICK, { equity: this.equity });
   }
 
   _processPendingOrdersCandle(candle) {
     const stillPending = [];
+    let anyFilled = false;
     for (const order of this.pendingOrders) {
       const fillPrice = this._fillModel.checkCandleFill(candle, order);
       if (fillPrice !== null) {
         const filled = { ...order, status: 'open', filledTime: candle.time, entryPrice: fillPrice };
         this.positions.push(filled);
         this._filledThisCandle.add(filled.id);
+        anyFilled = true;
         EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: candle.time });
         EventBus.emit(Events.POSITION_OPENED, { position: filled });
       } else {
@@ -196,6 +212,11 @@ export class ExecutionEngine {
       }
     }
     this.pendingOrders = stillPending;
+    // Margin was already reserved at order placement time — no change to reservedMargin
+    // here, but the UI (pending list, free margin display) needs to refresh.
+    if (anyFilled) {
+      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+    }
   }
 
   _checkSLTPCandle(candle) {

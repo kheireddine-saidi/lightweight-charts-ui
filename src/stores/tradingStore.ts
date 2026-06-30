@@ -89,6 +89,11 @@ export const useTradingStore = create<TradingState>((set, get) => {
     EventBus.on(Events.BALANCE_CHANGED, ({ balance, equity, reservedMargin }: { balance: number; equity: number; reservedMargin?: number }) => {
       set({ balance, equity, ...(reservedMargin != null ? { reservedMargin } : {}) });
     });
+    // Lightweight per-tick equity update (live unrealised PnL) — avoids a full
+    // _syncFromEngine() call on every price tick.
+    EventBus.on(Events.EQUITY_TICK, ({ equity }: { equity: number }) => {
+      set({ equity });
+    });
   }
 
   return {
