@@ -1,5 +1,10 @@
 /**
- * ExecutionEngine — processes orders and manages positions.
+ * ExecutionEngine — thin coordinator for order/position processing.
+ *
+ * Delegates to three focused sub-managers:
+ *   - OrderManager   : pending orders (limit/stop) lifecycle
+ *   - PositionManager: open positions, SL/TP checks, per-position PnL
+ *   - Portfolio      : balance, equity, reserved margin
  *
  * Two execution paths:
  *
@@ -14,31 +19,53 @@
  *   - Uses FillModel.checkCandleFill() and FillModel.checkSLTPCandle()
  *   - Deterministic fill ordering via priceSequence()
  *
+ * Public API is unchanged — all existing call sites work without modification.
+ *
  * No React imports. No chart imports.
  */
 
 import { EventBus, Events } from '../../core/EventBus';
-import { FillModel } from './FillModel';
-import { orderIdGenerator } from '../../core/OrderIdGenerator';
-import { validateTPSL } from '../../utils/tpslValidation';
+import { FillModel }         from './FillModel';
+import { OrderManager }      from './OrderManager';
+import { PositionManager }   from './PositionManager';
+import { Portfolio }         from './Portfolio';
+import { orderIdGenerator }  from '../../core/OrderIdGenerator';
+import { validateTPSL }      from '../../utils/tpslValidation';
 import { calculateRiskBasedPositionSize } from '../../utils/positionSizing';
 import { executionSettings } from './ExecutionSettings';
 
 export class ExecutionEngine {
   constructor({ initialBalance = 10_000, fillMode = 'conservative' } = {}) {
-    this.balance = initialBalance;
-    this.equity  = initialBalance;
-    this.reservedMargin = 0;   // margin locked in open positions + pending orders
-    this.positions    = [];
-    this.pendingOrders = [];
-    this.closedTrades = [];
-    this._fillModel   = new FillModel(fillMode);
+    this._fillModel = new FillModel(fillMode);
+
+    // Bind the shared TPSL validation callback so sub-managers can use it
+    // without holding a reference back to ExecutionEngine.
+    const validateTPSLCallback = (current, fields, status, refPrice) =>
+      this._validateAndFilterTPSL(current, fields, status, refPrice);
+
+    this.orderManager    = new OrderManager(this._fillModel, validateTPSLCallback);
+    this.positionManager = new PositionManager(this._fillModel, validateTPSLCallback);
+    this.portfolio       = new Portfolio(initialBalance);
+
     this._unsubCandle = null;
     this._started     = false;
-    this._prevPrice   = null;   // for crossover detection in tick mode
-    this._filledThisCandle = new Set();
-    this._lastPriceBySymbol = {}; // symbol -> last known price, for correct per-symbol equity
+    this._prevPrice   = null; // kept for legacy compat (processTick crossover uses OrderManager._prevPrice now)
   }
+
+  // ─── Public property mirrors (read-only — for legacy code that accesses these directly) ──
+
+  /** @returns {Array<object>} */
+  get positions() { return this.positionManager.positions; }
+  /** @returns {Array<object>} */
+  get pendingOrders() { return this.orderManager.orders; }
+  /** @returns {Array<object>} */
+  get closedTrades() { return this.positionManager.closedTrades; }
+  /** @returns {number} */
+  get balance() { return this.portfolio.balance; }
+  /** @returns {number} */
+  get equity() { return this.portfolio.equity; }
+  /** @returns {number} */
+  get reservedMargin() { return this.portfolio.reservedMargin; }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -61,108 +88,101 @@ export class ExecutionEngine {
 
   /**
    * Called on every WebSocket price tick (including in-progress candles).
-   * This is the correct path for live order fills — immediate, not end-of-candle.
    * @param {string} symbol
    * @param {number} price
    * @param {number} [tickTime]
    */
   processTick(symbol, price, tickTime) {
-    this._lastPriceBySymbol[symbol] = price;
+    this.portfolio.setLastPrice(symbol, price);
     const now = tickTime ?? Math.floor(Date.now() / 1000);
-    const prev = this._prevPrice;
 
-    // 1. Check pending orders — filter by symbol before checking fills
-    const stillPending = [];
-    let anyOrderFilled = false;
-    for (const order of this.pendingOrders) {
-      if (order.symbol !== symbol) { stillPending.push(order); continue; }
-      const fillPrice = this._fillModel.checkTickFill(price, prev, order);
-      if (fillPrice !== null) {
-        const filled = { ...order, status: 'open', filledTime: now, entryPrice: fillPrice };
-        this.positions.push(filled);
-        anyOrderFilled = true;
-        EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: now });
-        EventBus.emit(Events.POSITION_OPENED, { position: filled });
-      } else {
-        stillPending.push(order);
-      }
+    // 1. Match pending orders — symbol-scoped inside OrderManager
+    const filledOrders = this.orderManager.matchTick(symbol, price, now);
+    let anyOrderFilled = filledOrders.length > 0;
+    for (const filledOrder of filledOrders) {
+      const pos = this.positionManager.openPosition(filledOrder);
+      EventBus.emit(Events.ORDER_FILLED,    { order: pos, fillPrice: pos.entryPrice, fillTime: now });
+      EventBus.emit(Events.POSITION_OPENED, { position: pos });
     }
-    this.pendingOrders = stillPending;
-    // Notify immediately so the pending-orders list (UI) and margin display
-    // refresh the instant a fill happens — not on the next unrelated event.
     if (anyOrderFilled) {
-      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+      EventBus.emit(Events.BALANCE_CHANGED, {
+        balance: this.portfolio.balance,
+        equity:  this.portfolio.equity,
+        reservedMargin: this.portfolio.reservedMargin,
+      });
     }
 
-    // 2. Check SL/TP on open positions — filter by symbol
-    const toClose = [];
-    const remaining = [];
-    for (const pos of this.positions) {
-      if (pos.symbol !== symbol) { remaining.push(pos); continue; }
-      const result = this._fillModel.checkSLTPTick(price, pos);
-      if (result) {
-        toClose.push({ pos, closePrice: result.price, reason: result.reason });
-      } else {
-        remaining.push(pos);
-      }
-    }
-    this.positions = remaining;
-    for (const { pos, closePrice, reason } of toClose) {
+    // 2. Check SL/TP on open positions — symbol-scoped inside PositionManager
+    const triggered = this.positionManager.checkSLTPTick(symbol, price, now);
+    for (const { pos, closePrice, reason } of triggered) {
       this._finaliseClose(pos, closePrice, now, reason);
     }
 
-    this._prevPrice = price;
+    this._prevPrice = price; // legacy compat
     this._updateEquity();
-    // Lightweight per-tick notification — only equity changes (unrealised PnL),
-    // not balance/reservedMargin. Kept separate from BALANCE_CHANGED so we don't
-    // spam the heavier "things actually changed" semantics on every single tick.
-    EventBus.emit(Events.EQUITY_TICK, { equity: this.equity });
+
+    EventBus.emit(Events.EQUITY_TICK, { equity: this.portfolio.equity });
   }
 
   // ─── Order management ─────────────────────────────────────────────────────
 
   openPosition(data) {
-    const id = orderIdGenerator.next();
+    const id      = orderIdGenerator.next();
     const isLimit = data.type === 'limit' || data.type === 'stop';
 
     const pos = {
-      symbol: 'BTCUSDT',
-      side: 'long',
-      type: 'market',
+      symbol:       'BTCUSDT',
+      side:         'long',
+      type:         'market',
       positionSize: 0.01,
-      leverage: 1,
-      pnl: 0,
-      pnlPercent: 0,
-      openedAt: new Date(),
+      leverage:     1,
+      pnl:          0,
+      pnlPercent:   0,
+      openedAt:     new Date(),
       ...data,
       id,
-      status: isLimit ? 'pending' : 'open',
+      status:    isLimit ? 'pending' : 'open',
       entryTime: data.entryTime ?? Math.floor(Date.now() / 1000),
     };
 
     if (isLimit) {
-      // Check immediate fill: if limit is at-or-beyond current market, fill now
-      if (this._prevPrice !== null) {
-        const fillPrice = this._fillModel.checkTickFill(this._prevPrice, null, pos);
+      // Check for immediate fill (order at-or-beyond current market price)
+      const currentPrice = this.orderManager._prevPrice;
+      if (currentPrice !== null) {
+        const fillPrice = this._fillModel.checkTickFill(currentPrice, null, pos);
         if (fillPrice !== null) {
-          const filled = { ...pos, status: 'open', filledTime: pos.entryTime, entryPrice: fillPrice };
-          this.positions.push(filled);
-          this.reservedMargin += (filled.requiredMargin ?? 0);
-          EventBus.emit(Events.ORDER_CREATED,   { order: filled });
-          EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: filled.filledTime });
-          EventBus.emit(Events.POSITION_OPENED, { position: filled });
-          EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
-          return filled.id;
+          const filledOrder = { ...pos, fillPrice, fillTime: pos.entryTime };
+          const openedPos   = this.positionManager.openPosition(filledOrder);
+          this.portfolio.reserveMargin(openedPos.requiredMargin ?? 0);
+          EventBus.emit(Events.ORDER_CREATED,   { order: openedPos });
+          EventBus.emit(Events.ORDER_FILLED,    { order: openedPos, fillPrice, fillTime: openedPos.filledTime });
+          EventBus.emit(Events.POSITION_OPENED, { position: openedPos });
+          EventBus.emit(Events.BALANCE_CHANGED, {
+            balance: this.portfolio.balance,
+            equity:  this.portfolio.equity,
+            reservedMargin: this.portfolio.reservedMargin,
+          });
+          return openedPos.id;
         }
       }
-      this.pendingOrders.push(pos);
-      this.reservedMargin += (pos.requiredMargin ?? 0);
-      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+      this.orderManager.addOrder(pos);
+      this.portfolio.reserveMargin(pos.requiredMargin ?? 0);
+      EventBus.emit(Events.BALANCE_CHANGED, {
+        balance: this.portfolio.balance,
+        equity:  this.portfolio.equity,
+        reservedMargin: this.portfolio.reservedMargin,
+      });
     } else {
-      this.positions.push(pos);
-      this.reservedMargin += (pos.requiredMargin ?? 0);
-      EventBus.emit(Events.POSITION_OPENED, { position: pos });
-      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+      // Market order — open immediately
+      const filledOrder = { ...pos, fillPrice: pos.entryPrice, fillTime: pos.entryTime };
+      const openedPos   = this.positionManager.openPosition(filledOrder);
+      this.portfolio.reserveMargin(openedPos.requiredMargin ?? 0);
+      EventBus.emit(Events.POSITION_OPENED, { position: openedPos });
+      EventBus.emit(Events.BALANCE_CHANGED, {
+        balance: this.portfolio.balance,
+        equity:  this.portfolio.equity,
+        reservedMargin: this.portfolio.reservedMargin,
+      });
     }
 
     EventBus.emit(Events.ORDER_CREATED, { order: pos });
@@ -170,71 +190,165 @@ export class ExecutionEngine {
   }
 
   cancelOrder(id) {
-    const order = this.pendingOrders.find(o => o.id === id);
-    if (order) this.reservedMargin = Math.max(0, this.reservedMargin - (order.requiredMargin ?? 0));
-    this.pendingOrders = this.pendingOrders.filter((o) => o.id !== id);
+    const removed = this.orderManager.cancelOrder(id);
+    if (removed) {
+      this.portfolio.releaseMargin(removed.requiredMargin ?? 0);
+    }
     EventBus.emit(Events.ORDER_CANCELLED, { id });
-    EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+    EventBus.emit(Events.BALANCE_CHANGED, {
+      balance: this.portfolio.balance,
+      equity:  this.portfolio.equity,
+      reservedMargin: this.portfolio.reservedMargin,
+    });
   }
 
   /**
    * Update a position or pending order's fields. TP/SL changes are validated
-   * before being applied — if the new value would trigger an immediate
-   * market execution (wrong side of current price for open positions, or
-   * wrong side of entry price for pending orders), the change is REJECTED
-   * (the field is left unchanged) and a TPSL_REJECTED event is emitted so
-   * any UI surface (PositionsPanel, TradingPanel, chart drag handles) can
-   * show a warning bubble. This is the single chokepoint all SL/TP edits
-   * route through, regardless of which UI triggered them.
+   * before being applied — if invalid, TPSL_REJECTED is emitted. This is the
+   * single chokepoint all SL/TP edits route through.
    */
   updatePosition(id, fields) {
-    // ── open positions branch: no auto-resize for filled positions ──
-    const idx = this.positions.findIndex((p) => p.id === id);
-    if (idx !== -1) {
-      const pos = this.positions[idx];
-      const safeFields = this._validateAndFilterTPSL(pos, fields, 'open', this._prevPrice ?? pos.entryPrice);
-      this.positions[idx] = { ...pos, ...safeFields };
+    // ── Open positions branch ──
+    if (this.positionManager.getPosition(id)) {
+      this.positionManager.updatePosition(
+        id,
+        fields,
+        this._prevPrice ?? this.positionManager.getPosition(id)?.entryPrice,
+      );
       return;
     }
 
-    // ── pending order branch: validate SL/TP, then auto-resize if eligible ──
-    const oidx = this.pendingOrders.findIndex((p) => p.id === id);
-    if (oidx !== -1) {
-      const order = this.pendingOrders[oidx];
-      const safeFields = this._validateAndFilterTPSL(order, fields, 'pending', order.entryPrice);
+    // ── Pending order branch: validate then auto-resize if eligible ──
+    const order = this.orderManager.getOrder(id);
+    if (!order) return;
 
-      let resizeFields = {};
-      if (safeFields.stopLoss !== undefined && !order.sizeOverridden) {
-        // Use the same price resolution FillModel.checkTickFill already uses for this order
-        const effectiveEntry = order.limitPrice ?? order.entryPrice;
-        const sizing = calculateRiskBasedPositionSize({
-          balance: this.balance,
-          riskPercent: executionSettings.riskPerTradePercent,
-          entryPrice: effectiveEntry,
-          stopLossPrice: safeFields.stopLoss,
-          leverage: order.leverage,
+    const { safeFields } = this.orderManager.updateOrder(id, fields);
+
+    if (safeFields.stopLoss !== undefined && !order.sizeOverridden) {
+      const effectiveEntry = order.limitPrice ?? order.entryPrice;
+      const sizing = calculateRiskBasedPositionSize({
+        balance:       this.portfolio.balance,
+        riskPercent:   executionSettings.riskPerTradePercent,
+        entryPrice:    effectiveEntry,
+        stopLossPrice: safeFields.stopLoss,
+        leverage:      order.leverage,
+      });
+      if (sizing) {
+        const marginDelta = sizing.requiredMargin - (order.requiredMargin ?? 0);
+        this.portfolio.adjustMargin(marginDelta);
+        this.orderManager.patchOrder(id, {
+          positionSize:   sizing.positionSize,
+          quoteSize:      sizing.quoteSize,
+          requiredMargin: sizing.requiredMargin,
         });
-        if (sizing) {
-          this.reservedMargin = Math.max(0, this.reservedMargin - (order.requiredMargin ?? 0) + sizing.requiredMargin);
-          resizeFields = { positionSize: sizing.positionSize, quoteSize: sizing.quoteSize, requiredMargin: sizing.requiredMargin };
-        }
-      }
-
-      this.pendingOrders[oidx] = { ...order, ...safeFields, ...resizeFields };
-      if (Object.keys(resizeFields).length) {
-        EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+        EventBus.emit(Events.BALANCE_CHANGED, {
+          balance: this.portfolio.balance,
+          equity:  this.portfolio.equity,
+          reservedMargin: this.portfolio.reservedMargin,
+        });
       }
     }
   }
 
+  closePosition(id, closePrice, closeTime) {
+    const pos = this.positionManager.getPosition(id);
+    if (!pos) return;
+    // Remove from positionManager manually then finalise
+    this.positionManager.positions = this.positionManager.positions.filter(p => p.id !== id);
+    this._finaliseClose(pos, closePrice, closeTime ?? Math.floor(Date.now() / 1000), 'manual');
+  }
+
+  // ─── Replay/backtest candle processing ────────────────────────────────────
+
+  _onCandle(symbol, candle) {
+    this.portfolio.setLastPrice(symbol, candle.close);
+    this.positionManager.resetCandleGuard();
+
+    this._processPendingOrdersCandle(symbol, candle);
+    this._checkSLTPCandle(symbol, candle);
+    this._updateEquity();
+    this._prevPrice = candle.close;
+
+    EventBus.emit(Events.EQUITY_TICK, { equity: this.portfolio.equity });
+  }
+
+  _processPendingOrdersCandle(symbol, candle) {
+    const filledOrders = this.orderManager.matchCandle(symbol, candle);
+    let anyFilled = filledOrders.length > 0;
+    for (const filledOrder of filledOrders) {
+      const pos = this.positionManager.openPosition(filledOrder);
+      this.positionManager.markFilledThisCandle(pos.id);
+      EventBus.emit(Events.ORDER_FILLED,    { order: pos, fillPrice: pos.entryPrice, fillTime: candle.time });
+      EventBus.emit(Events.POSITION_OPENED, { position: pos });
+    }
+    if (anyFilled) {
+      EventBus.emit(Events.BALANCE_CHANGED, {
+        balance: this.portfolio.balance,
+        equity:  this.portfolio.equity,
+        reservedMargin: this.portfolio.reservedMargin,
+      });
+    }
+  }
+
+  _checkSLTPCandle(symbol, candle) {
+    const triggered = this.positionManager.checkSLTPCandle(symbol, candle);
+    for (const { pos, closePrice, reason } of triggered) {
+      this._finaliseClose(pos, closePrice, candle.time, reason);
+    }
+  }
+
+  // ─── Internal helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Finalise a position close: release margin, apply PnL, push to closedTrades,
+   * and emit events. Accepts already-removed pos objects (from PositionManager).
+   */
+  _finaliseClose(pos, closePrice, closeTime, reason = 'manual') {
+    const pnl = this._calculatePnL(pos, closePrice);
+    this.portfolio.releaseMargin(pos.requiredMargin ?? 0);
+    this.portfolio.applyRealisedPnL(pnl);
+
+    const closed = {
+      ...pos,
+      status:      'closed',
+      closePrice,
+      closeTime,
+      closedAt:    new Date(),
+      closeReason: reason,
+      pnl,
+      pnlPercent:  (pnl / (pos.entryPrice * pos.positionSize)) * 100,
+    };
+    this.positionManager.closedTrades.push(closed);
+
+    EventBus.emit(Events.POSITION_CLOSED,  { position: closed, closePrice, closeTime, pnl, reason });
+    EventBus.emit(Events.BALANCE_CHANGED,  {
+      balance: this.portfolio.balance,
+      equity:  this.portfolio.equity,
+      reservedMargin: this.portfolio.reservedMargin,
+      change: pnl,
+    });
+  }
+
+  _updateEquity() {
+    this.portfolio.recalcEquity(
+      this.positionManager.positions,
+      (pos, price) => this._calculatePnL(pos, price),
+    );
+  }
+
+  _calculatePnL(pos, closePrice) {
+    const direction = pos.side === 'long' ? 1 : -1;
+    return (closePrice - pos.entryPrice) * direction * pos.positionSize * pos.leverage;
+  }
+
   /**
    * Filters a fields update, dropping stopLoss/takeProfit values that would
-   * be invalid (would trigger an immediate market execution). Emits
-   * TPSL_REJECTED for each rejected field so the UI can surface a warning.
+   * be invalid (would trigger immediate market execution). Emits TPSL_REJECTED
+   * for each rejected field. This is the single TPSL validation chokepoint.
    */
   _validateAndFilterTPSL(current, fields, status, refPrice) {
     if (fields.stopLoss === undefined && fields.takeProfit === undefined) {
-      return fields; // nothing TP/SL related to validate
+      return fields;
     }
     const nextTP = fields.takeProfit !== undefined ? fields.takeProfit : current.takeProfit ?? null;
     const nextSL = fields.stopLoss   !== undefined ? fields.stopLoss   : current.stopLoss   ?? null;
@@ -242,7 +356,6 @@ export class ExecutionEngine {
 
     if (result.valid) return fields;
 
-    // Reject only the offending field — keep the other field's change if it was valid.
     const filtered = { ...fields };
     if (result.field === 'tp') delete filtered.takeProfit;
     if (result.field === 'sl') delete filtered.stopLoss;
@@ -253,126 +366,28 @@ export class ExecutionEngine {
     return filtered;
   }
 
-  closePosition(id, closePrice, closeTime) {
-    const idx = this.positions.findIndex((p) => p.id === id);
-    if (idx === -1) return;
-    const pos = this.positions.splice(idx, 1)[0];
-    this._finaliseClose(pos, closePrice, closeTime ?? Math.floor(Date.now() / 1000), 'manual');
-  }
-
-  // ─── Replay/backtest candle processing ────────────────────────────────────
-
-  _onCandle(symbol, candle) {
-    this._lastPriceBySymbol[symbol] = candle.close;
-    this._filledThisCandle = new Set();
-    this._processPendingOrdersCandle(symbol, candle);
-    this._checkSLTPCandle(symbol, candle);
-    this._updateEquity();
-    this._prevPrice = candle.close;
-    EventBus.emit(Events.EQUITY_TICK, { equity: this.equity });
-  }
-
-  _processPendingOrdersCandle(symbol, candle) {
-    const stillPending = [];
-    let anyFilled = false;
-    for (const order of this.pendingOrders) {
-      if (order.symbol !== symbol) { stillPending.push(order); continue; }
-      const fillPrice = this._fillModel.checkCandleFill(candle, order);
-      if (fillPrice !== null) {
-        const filled = { ...order, status: 'open', filledTime: candle.time, entryPrice: fillPrice };
-        this.positions.push(filled);
-        this._filledThisCandle.add(filled.id);
-        anyFilled = true;
-        EventBus.emit(Events.ORDER_FILLED,    { order: filled, fillPrice, fillTime: candle.time });
-        EventBus.emit(Events.POSITION_OPENED, { position: filled });
-      } else {
-        stillPending.push(order);
-      }
-    }
-    this.pendingOrders = stillPending;
-    // Margin was already reserved at order placement time — no change to reservedMargin
-    // here, but the UI (pending list, free margin display) needs to refresh.
-    if (anyFilled) {
-      EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
-    }
-  }
-
-  _checkSLTPCandle(symbol, candle) {
-    const toClose  = [];
-    const remaining = [];
-    for (const pos of this.positions) {
-      // Skip positions on a different symbol
-      if (pos.symbol !== symbol) { remaining.push(pos); continue; }
-      // Skip newly filled positions — cannot SL/TP in same candle as fill
-      if (this._filledThisCandle.has(pos.id)) {
-        remaining.push(pos);
-        continue;
-      }
-      const result = this._fillModel.checkSLTPCandle(candle, pos);
-      if (result) {
-        toClose.push({ pos, closePrice: result.price, reason: result.reason });
-      } else {
-        remaining.push(pos);
-      }
-    }
-    this.positions = remaining;
-    for (const { pos, closePrice, reason } of toClose) {
-      this._finaliseClose(pos, closePrice, candle.time, reason);
-    }
-  }
-
-  // ─── Internal helpers ─────────────────────────────────────────────────────
-
-  _finaliseClose(pos, closePrice, closeTime, reason = 'manual') {
-    const pnl = this._calculatePnL(pos, closePrice);
-    // Release margin and credit PnL to balance
-    this.reservedMargin = Math.max(0, this.reservedMargin - (pos.requiredMargin ?? 0));
-    this.balance += pnl;
-    const closed = {
-      ...pos,
-      status: 'closed',
-      closePrice,
-      closeTime,
-      closedAt:   new Date(),
-      closeReason: reason,
-      pnl,
-      pnlPercent: (pnl / (pos.entryPrice * pos.positionSize)) * 100,
-    };
-    this.closedTrades.push(closed);
-    EventBus.emit(Events.POSITION_CLOSED,  { position: closed, closePrice, closeTime, pnl, reason });
-    EventBus.emit(Events.BALANCE_CHANGED,  { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin, change: pnl });
-  }
-
-  _updateEquity() {
-    let unrealised = 0;
-    for (const pos of this.positions) {
-      const p = this._lastPriceBySymbol[pos.symbol] ?? pos.entryPrice;
-      unrealised += this._calculatePnL(pos, p);
-    }
-    this.equity = this.balance + unrealised;
-  }
-
-  _calculatePnL(pos, closePrice) {
-    const direction = pos.side === 'long' ? 1 : -1;
-    return (closePrice - pos.entryPrice) * direction * pos.positionSize * pos.leverage;
-  }
+  // ─── Snapshot ─────────────────────────────────────────────────────────────
 
   getSnapshot() {
     return {
-      balance: this.balance,
-      equity:  this.equity,
-      positions:     this.positions.map((p) => ({ ...p })),
-      pendingOrders: this.pendingOrders.map((p) => ({ ...p })),
-      closedTrades:  this.closedTrades.map((p) => ({ ...p })),
+      balance:       this.portfolio.balance,
+      equity:        this.portfolio.equity,
+      positions:     this.positionManager.positions.map(p => ({ ...p })),
+      pendingOrders: this.orderManager.orders.map(o => ({ ...o })),
+      closedTrades:  this.positionManager.closedTrades.map(p => ({ ...p })),
     };
   }
 
   restoreSnapshot(snap) {
-    this.balance       = snap.balance ?? this.balance;
-    this.equity        = snap.equity  ?? this.equity;
-    this.positions     = snap.positions     ?? [];
-    this.pendingOrders = snap.pendingOrders ?? [];
-    this.closedTrades  = snap.closedTrades  ?? [];
+    this.portfolio.restoreSnapshot({
+      balance: snap.balance,
+      equity:  snap.equity,
+    });
+    this.positionManager.restoreSnapshot({
+      positions:    snap.positions    ?? [],
+      closedTrades: snap.closedTrades ?? [],
+    });
+    this.orderManager.restoreSnapshot(snap.pendingOrders ?? []);
   }
 }
 
