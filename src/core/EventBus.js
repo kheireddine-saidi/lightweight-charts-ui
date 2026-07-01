@@ -49,6 +49,13 @@ export const Events = Object.freeze({
   /** Replay clock state changed. payload: SimulationClock.state */
   REPLAY_STATE: 'REPLAY_STATE',
 
+  /**
+   * A timestamp tick from the replay clock.
+   * payload: { timestamp: number }  (unix seconds)
+   * Each chart's ReplayFeed listens and resolves its own nearest candle.
+   */
+  REPLAY_TICK: 'REPLAY_TICK',
+
   /** Alert triggered. payload: { alert } */
   ALERT_TRIGGERED: 'ALERT_TRIGGERED',
 

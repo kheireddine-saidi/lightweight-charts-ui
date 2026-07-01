@@ -10,8 +10,8 @@
  * Does NOT contain chart rendering, indicator, or trading logic.
  */
 
-import { feedManager } from '../../feeds/FeedManager';
-import { intervalToSeconds as _intervalToSeconds } from '../../utils/timeframes';
+import { feedManager } from '../feeds/FeedManager';
+import { intervalToSeconds as _intervalToSeconds } from '../utils/timeframes';
 
 export class ChartDataManager {
   /**

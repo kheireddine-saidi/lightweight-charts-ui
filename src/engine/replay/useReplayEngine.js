@@ -2,10 +2,12 @@
  * useReplayEngine — React hook wrapping the singleton ReplayEngine.
  *
  * Subscribes to EventBus REPLAY_STATE events so the component tree
- * re-renders only when the clock state changes (not on every candle).
+ * re-renders only when the clock state changes (not on every tick).
  * The underlying SimulationClock is never recreated across renders.
+ *
+ * CHANGED (Phase 3): load() now accepts (data, symbol, timeline).
  */
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { replayEngine } from './ReplayEngine';
 import { EventBus, Events } from '../../core/EventBus';
 
@@ -18,7 +20,12 @@ export function useReplayEngine() {
     return unsub;
   }, []);
 
-  const load = useCallback((data, symbol) => replayEngine.load(data, symbol), []);
+  /**
+   * @param {object[]} data
+   * @param {string}   symbol
+   * @param {number[]} [timeline]
+   */
+  const load = useCallback((data, symbol, timeline) => replayEngine.load(data, symbol, timeline), []);
   const play = useCallback(() => replayEngine.play(), []);
   const pause = useCallback(() => replayEngine.pause(), []);
   const stop = useCallback(() => replayEngine.stop(), []);

@@ -24,6 +24,8 @@ import '../../plugins/line-tools/line-tools.css';
 import ReplayControls from '../Replay/ReplayControls';
 import ReplaySlider from '../Replay/ReplaySlider';
 import { useReplayEngine } from '../../engine/replay/useReplayEngine';
+import { ReplayFeed } from '../../feeds/ReplayFeed';
+import { ChartDataManager } from '../../chart/ChartDataManager';
 import TradeSetupTool from './TradeSetupTool';
 
 const TOOL_MAP = {
@@ -153,6 +155,28 @@ const ChartComponent = forwardRef(({
     const fullDataRef = useRef([]); // Store full data for replay
     const followerFullDataRef = useRef([]); // Immutable snapshot for follower sync — never mutated by replay
     const fadedSeriesRef = useRef(null); // Store faded series for future candles
+    // Per-chart ReplayFeed — owns binary-search advanceTo logic for REPLAY_TICK events
+    const replayFeedRef = useRef(null);
+
+    // ChartDataManager — encapsulates data loading and feed subscription for this chart.
+    // Instantiated once per chart mount; used alongside existing inline load logic.
+    // TODO (Phase 3.5): replace inline loadData useEffect with manager.load() calls.
+    const chartDataManagerRef = useRef(null);
+    useEffect(() => {
+        const mgr = new ChartDataManager({
+            chartId: `chart-component-${symbol}-${interval}`,
+            feed: activeFeed,
+            onCandle: (_candle, _allData) => { /* managed inline for now */ },
+            onHistoryLoaded: (_data) => { /* managed inline for now */ },
+            onError: (err) => console.error('[ChartDataManager]', err),
+        });
+        chartDataManagerRef.current = mgr;
+        return () => {
+            mgr.destroy();
+            chartDataManagerRef.current = null;
+        };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Derived refs kept in sync with hook state (needed in callbacks/closures)
     const replayIndexRef = useRef(null);
@@ -507,7 +531,16 @@ useImperativeHandle(ref, () => ({
                 fullDataRef.current = [...dataRef.current];
                 const startIndex = Math.max(0, dataRef.current.length - 1);
                 replayIndexRef.current = startIndex;
-                replayLoad(fullDataRef.current, symbol);
+                // Build timeline from candle open times
+                const timeline = fullDataRef.current.map(c => c.time);
+                // Initialise per-chart ReplayFeed for REPLAY_TICK → advanceTo
+                if (!replayFeedRef.current) {
+                    replayFeedRef.current = new ReplayFeed(fullDataRef.current, symbol);
+                } else {
+                    replayFeedRef.current.setData(fullDataRef.current, symbol);
+                    replayFeedRef.current.reset();
+                }
+                replayLoad(fullDataRef.current, symbol, timeline);
                 replaySeek(startIndex);
                 setTimeout(() => {
                     if (updateReplayDataRef.current) {
@@ -2284,26 +2317,46 @@ useImperativeHandle(ref, () => ({
             if (isPlayingRef.current) {
                 replayPause();
             }
+            // Reset the feed so seeking backward re-emits candles correctly
+            if (replayFeedRef.current) {
+                replayFeedRef.current.reset();
+            }
             replaySeek(index);
-            // The CANDLE event emitted by seek will drive updateReplayData via EventBus
+            // The REPLAY_TICK from seek → advanceTo → CANDLE drives updateReplayData
             updateReplayData(index, hideFuture);
         }
     }, [updateReplayData, replayPause, replaySeek]);
 
-    // Playback Effect — driven by SimulationClock via EventBus (no setInterval).
-    // When replay is active, the clock emits CANDLE events; we subscribe here
-    // and update the chart series for each emitted candle.
+    // Playback Effect — driven by SimulationClock via REPLAY_TICK (Phase 3).
+    // The single clock emits a timestamp; this chart's ReplayFeed resolves
+    // the nearest candle via binary search (advanceTo), which calls
+    // executionEngine._onCandle first (explicit ordering), then emits CANDLE.
+    // We listen to CANDLE here to update the chart series.
     useEffect(() => {
         if (!isReplayMode) return;
 
-        const unsub = EventBus.on(Events.CANDLE, ({ candle, index }) => {
+        // REPLAY_TICK → feed resolves candle → emits CANDLE
+        const unsubTick = EventBus.on(Events.REPLAY_TICK, ({ timestamp }) => {
             if (!isReplayModeRef.current) return;
+            if (replayFeedRef.current) {
+                replayFeedRef.current.advanceTo(timestamp);
+            }
+        });
+
+        // CANDLE → update chart series (emitted by ReplayFeed.advanceTo)
+        const unsubCandle = EventBus.on(Events.CANDLE, ({ candle, index, symbol: candleSymbol }) => {
+            if (!isReplayModeRef.current) return;
+            // Only handle candles for this chart's symbol (multi-chart support)
+            if (candleSymbol && symbol && candleSymbol !== symbol) return;
             replayIndexRef.current = index;
             updateReplayData(index, true); // true = hide future candles
         });
 
-        return () => unsub();
-    }, [isReplayMode, updateReplayData]);
+        return () => {
+            unsubTick();
+            unsubCandle();
+        };
+    }, [isReplayMode, updateReplayData, symbol]);
 
     // Click Handler for Replay Mode - handles direct chart clicks to jump to a position
     // Uses chart.subscribeClick which provides accurate param.time
