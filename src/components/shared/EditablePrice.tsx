@@ -11,15 +11,22 @@
 import React, { useState, useRef, useEffect } from 'react';
 import styled from 'styled-components';
 
+/* Reuses the --pp-* CSS variables injected by PositionsPanel's PanelThemeVars
+ * (and TradingPanel's equivalent --tp-* set, aliased below) — EditablePrice
+ * is rendered inside both panels' theme-scoped trees, so these custom
+ * properties are always available via CSS inheritance regardless of which
+ * panel renders it. Falls back to dark-theme hex if used standalone outside
+ * either panel (shouldn't normally happen).
+ */
 const C = {
-  surface: '#1e222d',
-  elevated: '#2a2e39',
-  border: '#2a2e39',
-  text: '#d1d4dc',
-  muted: '#787b86',
-  red: '#f23645',
-  green: '#089981',
-  orange: '#f0a500',
+  surface: 'var(--pp-surface, var(--tp-surface, #1e222d))',
+  elevated: 'var(--pp-border, var(--tp-elevated, #2a2e39))',
+  border: 'var(--pp-border, var(--tp-border, #2a2e39))',
+  text: 'var(--pp-text, var(--tp-text, #d1d4dc))',
+  muted: 'var(--pp-text-muted, var(--tp-muted, #787b86))',
+  red: 'var(--pp-red, var(--tp-red, #f23645))',
+  green: 'var(--pp-green, var(--tp-green, #089981))',
+  orange: 'var(--pp-orange, var(--tp-orange, #f0a500))',
 };
 
 const Wrap = styled.span`

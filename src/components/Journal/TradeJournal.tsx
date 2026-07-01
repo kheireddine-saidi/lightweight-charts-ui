@@ -12,11 +12,14 @@ import type { JournalEntry, JournalTag } from '../../services/journal/TradeJourn
 import { EventBus, Events } from '../../core/EventBus';
 
 /* ─── Tokens ─── */
+/* Reuses --pp-* CSS variables injected by the ancestor PositionsPanel
+ * (TradeJournal is always rendered as a tab inside PositionsPanel, so these
+ * custom properties are always available via CSS inheritance). */
 const C = {
-  bg: '#131722', surface: '#1e222d', surfaceAlt: '#252b3b',
-  elevated: '#2a2e39', border: '#2a2e39',
-  text: '#d1d4dc', muted: '#787b86', dim: '#4a5060',
-  green: '#089981', red: '#f23645', blue: '#2962ff', orange: '#f0a500',
+  bg: 'var(--pp-bg, #131722)', surface: 'var(--pp-surface, #1e222d)', surfaceAlt: 'var(--pp-surface-alt, #252b3b)',
+  elevated: 'var(--pp-border, #2a2e39)', border: 'var(--pp-border, #2a2e39)',
+  text: 'var(--pp-text, #d1d4dc)', muted: 'var(--pp-text-muted, #787b86)', dim: 'var(--pp-text-dim, #4a5060)',
+  green: 'var(--pp-green, #089981)', red: 'var(--pp-red, #f23645)', blue: 'var(--pp-blue, #2962ff)', orange: 'var(--pp-orange, #f0a500)',
 };
 const PRESETS = ['#2962ff','#089981','#f23645','#f0a500','#9c27b0','#00bcd4','#ff5722','#795548'];
 

@@ -20,7 +20,7 @@
  * @enum {string}
  */
 export const Events = Object.freeze({
-  /** Emitted for every new candle (replay or live). payload: { candle, index } */
+  /** Emitted for every new candle (replay or live). payload: { candle, index, symbol } */
   CANDLE: 'CANDLE',
 
   /** A new order has been submitted. payload: { order } */
@@ -63,6 +63,9 @@ export const Events = Object.freeze({
 
   /** A trade zone should be linked to a position. payload: { zoneId, positionId, status } */
   TRADE_ZONE_LINKED: 'TRADE_ZONE_LINKED',
+
+  /** Execution settings (risk/slippage/fees/funding) changed. payload: { settings } */
+  SETTINGS_CHANGED: 'SETTINGS_CHANGED',
 });
 
 class EventBusClass {

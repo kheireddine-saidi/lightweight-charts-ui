@@ -21,6 +21,8 @@ import { EventBus, Events } from '../../core/EventBus';
 import { FillModel } from './FillModel';
 import { orderIdGenerator } from '../../core/OrderIdGenerator';
 import { validateTPSL } from '../../utils/tpslValidation';
+import { calculateRiskBasedPositionSize } from '../../utils/positionSizing';
+import { executionSettings } from './ExecutionSettings';
 
 export class ExecutionEngine {
   constructor({ initialBalance = 10_000, fillMode = 'conservative' } = {}) {
@@ -32,22 +34,27 @@ export class ExecutionEngine {
     this.closedTrades = [];
     this._fillModel   = new FillModel(fillMode);
     this._unsubCandle = null;
+    this._started     = false;
     this._prevPrice   = null;   // for crossover detection in tick mode
     this._filledThisCandle = new Set();
+    this._lastPriceBySymbol = {}; // symbol -> last known price, for correct per-symbol equity
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   start() {
+    if (this._started) return;
+    this._started = true;
     // Listen to closed candles for replay/backtest fills
-    this._unsubCandle = EventBus.on(Events.CANDLE, ({ candle }) => {
-      this._onCandle(candle);
+    this._unsubCandle = EventBus.on(Events.CANDLE, ({ candle, symbol }) => {
+      this._onCandle(symbol, candle);
     });
   }
 
   stop() {
     this._unsubCandle?.();
     this._unsubCandle = null;
+    this._started = false;
   }
 
   // ─── Real-time tick processing (live mode) ────────────────────────────────
@@ -55,17 +62,20 @@ export class ExecutionEngine {
   /**
    * Called on every WebSocket price tick (including in-progress candles).
    * This is the correct path for live order fills — immediate, not end-of-candle.
+   * @param {string} symbol
    * @param {number} price
    * @param {number} [tickTime]
    */
-  processTick(price, tickTime) {
+  processTick(symbol, price, tickTime) {
+    this._lastPriceBySymbol[symbol] = price;
     const now = tickTime ?? Math.floor(Date.now() / 1000);
     const prev = this._prevPrice;
 
-    // 1. Check pending orders (fills happen immediately when price crosses limit)
+    // 1. Check pending orders — filter by symbol before checking fills
     const stillPending = [];
     let anyOrderFilled = false;
     for (const order of this.pendingOrders) {
+      if (order.symbol !== symbol) { stillPending.push(order); continue; }
       const fillPrice = this._fillModel.checkTickFill(price, prev, order);
       if (fillPrice !== null) {
         const filled = { ...order, status: 'open', filledTime: now, entryPrice: fillPrice };
@@ -84,10 +94,11 @@ export class ExecutionEngine {
       EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
     }
 
-    // 2. Check SL/TP on open positions (same tick — fill just happened on previous loop)
+    // 2. Check SL/TP on open positions — filter by symbol
     const toClose = [];
     const remaining = [];
     for (const pos of this.positions) {
+      if (pos.symbol !== symbol) { remaining.push(pos); continue; }
       const result = this._fillModel.checkSLTPTick(price, pos);
       if (result) {
         toClose.push({ pos, closePrice: result.price, reason: result.reason });
@@ -101,7 +112,7 @@ export class ExecutionEngine {
     }
 
     this._prevPrice = price;
-    this._updateEquity(price);
+    this._updateEquity();
     // Lightweight per-tick notification — only equity changes (unrealised PnL),
     // not balance/reservedMargin. Kept separate from BALANCE_CHANGED so we don't
     // spam the heavier "things actually changed" semantics on every single tick.
@@ -177,6 +188,7 @@ export class ExecutionEngine {
    * route through, regardless of which UI triggered them.
    */
   updatePosition(id, fields) {
+    // ── open positions branch: no auto-resize for filled positions ──
     const idx = this.positions.findIndex((p) => p.id === id);
     if (idx !== -1) {
       const pos = this.positions[idx];
@@ -184,11 +196,34 @@ export class ExecutionEngine {
       this.positions[idx] = { ...pos, ...safeFields };
       return;
     }
+
+    // ── pending order branch: validate SL/TP, then auto-resize if eligible ──
     const oidx = this.pendingOrders.findIndex((p) => p.id === id);
     if (oidx !== -1) {
       const order = this.pendingOrders[oidx];
       const safeFields = this._validateAndFilterTPSL(order, fields, 'pending', order.entryPrice);
-      this.pendingOrders[oidx] = { ...order, ...safeFields };
+
+      let resizeFields = {};
+      if (safeFields.stopLoss !== undefined && !order.sizeOverridden) {
+        // Use the same price resolution FillModel.checkTickFill already uses for this order
+        const effectiveEntry = order.limitPrice ?? order.entryPrice;
+        const sizing = calculateRiskBasedPositionSize({
+          balance: this.balance,
+          riskPercent: executionSettings.riskPerTradePercent,
+          entryPrice: effectiveEntry,
+          stopLossPrice: safeFields.stopLoss,
+          leverage: order.leverage,
+        });
+        if (sizing) {
+          this.reservedMargin = Math.max(0, this.reservedMargin - (order.requiredMargin ?? 0) + sizing.requiredMargin);
+          resizeFields = { positionSize: sizing.positionSize, quoteSize: sizing.quoteSize, requiredMargin: sizing.requiredMargin };
+        }
+      }
+
+      this.pendingOrders[oidx] = { ...order, ...safeFields, ...resizeFields };
+      if (Object.keys(resizeFields).length) {
+        EventBus.emit(Events.BALANCE_CHANGED, { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin });
+      }
     }
   }
 
@@ -227,19 +262,21 @@ export class ExecutionEngine {
 
   // ─── Replay/backtest candle processing ────────────────────────────────────
 
-  _onCandle(candle) {
+  _onCandle(symbol, candle) {
+    this._lastPriceBySymbol[symbol] = candle.close;
     this._filledThisCandle = new Set();
-    this._processPendingOrdersCandle(candle);
-    this._checkSLTPCandle(candle);
-    this._updateEquity(candle.close);
+    this._processPendingOrdersCandle(symbol, candle);
+    this._checkSLTPCandle(symbol, candle);
+    this._updateEquity();
     this._prevPrice = candle.close;
     EventBus.emit(Events.EQUITY_TICK, { equity: this.equity });
   }
 
-  _processPendingOrdersCandle(candle) {
+  _processPendingOrdersCandle(symbol, candle) {
     const stillPending = [];
     let anyFilled = false;
     for (const order of this.pendingOrders) {
+      if (order.symbol !== symbol) { stillPending.push(order); continue; }
       const fillPrice = this._fillModel.checkCandleFill(candle, order);
       if (fillPrice !== null) {
         const filled = { ...order, status: 'open', filledTime: candle.time, entryPrice: fillPrice };
@@ -260,10 +297,12 @@ export class ExecutionEngine {
     }
   }
 
-  _checkSLTPCandle(candle) {
+  _checkSLTPCandle(symbol, candle) {
     const toClose  = [];
     const remaining = [];
     for (const pos of this.positions) {
+      // Skip positions on a different symbol
+      if (pos.symbol !== symbol) { remaining.push(pos); continue; }
       // Skip newly filled positions — cannot SL/TP in same candle as fill
       if (this._filledThisCandle.has(pos.id)) {
         remaining.push(pos);
@@ -304,10 +343,11 @@ export class ExecutionEngine {
     EventBus.emit(Events.BALANCE_CHANGED,  { balance: this.balance, equity: this.equity, reservedMargin: this.reservedMargin, change: pnl });
   }
 
-  _updateEquity(currentPrice) {
+  _updateEquity() {
     let unrealised = 0;
     for (const pos of this.positions) {
-      unrealised += this._calculatePnL(pos, currentPrice);
+      const p = this._lastPriceBySymbol[pos.symbol] ?? pos.entryPrice;
+      unrealised += this._calculatePnL(pos, p);
     }
     this.equity = this.balance + unrealised;
   }

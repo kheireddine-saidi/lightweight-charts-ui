@@ -507,7 +507,7 @@ useImperativeHandle(ref, () => ({
                 fullDataRef.current = [...dataRef.current];
                 const startIndex = Math.max(0, dataRef.current.length - 1);
                 replayIndexRef.current = startIndex;
-                replayLoad(fullDataRef.current);
+                replayLoad(fullDataRef.current, symbol);
                 replaySeek(startIndex);
                 setTimeout(() => {
                     if (updateReplayDataRef.current) {
@@ -1714,11 +1714,11 @@ useImperativeHandle(ref, () => ({
                         // (not just closed candles) so fills are immediate and correct.
                         // Pass normalizedCandle.time (candle open time in seconds) as fillTime
                         // so zones can snap to the fill candle position via timeToCoordinate.
-                        executionEngine.processTick(normalizedCandle.close, normalizedCandle.time);
+                        executionEngine.processTick(symbol, normalizedCandle.close, normalizedCandle.time);
 
                         // Only emit closed candles to EventBus CANDLE for replay/indicator logic.
                         if (ticker.isClosed) {
-                            EventBus.emit(Events.CANDLE, { candle: normalizedCandle, index: currentData.length - 1 });
+                            EventBus.emit(Events.CANDLE, { candle: normalizedCandle, index: currentData.length - 1, symbol });
                         }
 
                         const currentChartType = chartTypeRef.current;

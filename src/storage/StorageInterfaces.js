@@ -99,7 +99,30 @@ export class ITradeStorage {
   }
 }
 
-// ─── Session Snapshot Storage ──────────────────────────────────────────────
+// ─── Settings Storage ──────────────────────────────────────────────────────
+
+/**
+ * @interface
+ */
+export class ISettingsStorage {
+  /**
+   * Load persisted execution settings.
+   * @returns {Promise<object | null>}
+   */
+  async loadSettings() {
+    throw new Error('ISettingsStorage.loadSettings() not implemented');
+  }
+
+  /**
+   * Persist execution settings.
+   * @param {object} settings
+   * @returns {Promise<void>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async saveSettings(settings) {
+    throw new Error('ISettingsStorage.saveSettings() not implemented');
+  }
+}
 
 /**
  * @interface

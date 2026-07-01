@@ -1,29 +1,75 @@
 // components/PositionsPanel/PositionsPanel.tsx
 import React, { useState } from 'react';
-import styled from 'styled-components';
+import styled, { createGlobalStyle } from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
+import { useThemeStore } from '../../stores/themeStore';
 import TradeJournal from '../Journal/TradeJournal';
 import EditablePrice from '../shared/EditablePrice';
 import { validateTPSL } from '../../utils/tpslValidation';
 
-/* ─── Design tokens ─── */
+/* ─── Design tokens ─────────────────────────────────────────────────────────
+ * Values are CSS custom properties so the panel responds live to dark/light
+ * theme changes without rewriting every styled-component usage site. The
+ * actual hex values per theme are injected by <PanelThemeVars> below, scoped
+ * to this panel's wrapper via [data-pp-theme].
+ */
 const C = {
-  bg: '#131722',
-  surface: '#1e222d',
-  surfaceAlt: '#252b3b',
-  border: '#2a2e39',
-  text: '#d1d4dc',
-  textMuted: '#787b86',
-  textDim: '#555b6e',
-  green: '#089981',
-  greenMuted: 'rgba(8,153,129,0.12)',
-  red: '#f23645',
-  redMuted: 'rgba(242,54,69,0.12)',
-  blue: '#2962ff',
-  orange: '#f0a500',
-  orangeMuted: 'rgba(240,165,0,0.12)',
+  bg: 'var(--pp-bg)',
+  surface: 'var(--pp-surface)',
+  surfaceAlt: 'var(--pp-surface-alt)',
+  border: 'var(--pp-border)',
+  text: 'var(--pp-text)',
+  textMuted: 'var(--pp-text-muted)',
+  textDim: 'var(--pp-text-dim)',
+  green: 'var(--pp-green)',
+  greenMuted: 'var(--pp-green-muted)',
+  red: 'var(--pp-red)',
+  redMuted: 'var(--pp-red-muted)',
+  blue: 'var(--pp-blue)',
+  orange: 'var(--pp-orange)',
+  orangeMuted: 'var(--pp-orange-muted)',
 };
+
+const DARK_VARS = {
+  '--pp-bg': '#131722',
+  '--pp-surface': '#1e222d',
+  '--pp-surface-alt': '#252b3b',
+  '--pp-border': '#2a2e39',
+  '--pp-text': '#d1d4dc',
+  '--pp-text-muted': '#787b86',
+  '--pp-text-dim': '#555b6e',
+  '--pp-green': '#089981',
+  '--pp-green-muted': 'rgba(8,153,129,0.12)',
+  '--pp-red': '#f23645',
+  '--pp-red-muted': 'rgba(242,54,69,0.12)',
+  '--pp-blue': '#2962ff',
+  '--pp-orange': '#f0a500',
+  '--pp-orange-muted': 'rgba(240,165,0,0.12)',
+};
+
+const LIGHT_VARS = {
+  '--pp-bg': '#ffffff',
+  '--pp-surface': '#f8f9fb',
+  '--pp-surface-alt': '#eef0f3',
+  '--pp-border': '#e0e3eb',
+  '--pp-text': '#131722',
+  '--pp-text-muted': '#5d606b',
+  '--pp-text-dim': '#9598a1',
+  '--pp-green': '#089981',
+  '--pp-green-muted': 'rgba(8,153,129,0.10)',
+  '--pp-red': '#f23645',
+  '--pp-red-muted': 'rgba(242,54,69,0.10)',
+  '--pp-blue': '#2962ff',
+  '--pp-orange': '#b8790a',
+  '--pp-orange-muted': 'rgba(184,121,10,0.10)',
+};
+
+const PanelThemeVars = createGlobalStyle<{ $vars: Record<string, string> }>`
+  [data-pp-theme] {
+    ${(p) => Object.entries(p.$vars).map(([k, v]) => `${k}: ${v};`).join('\n    ')}
+  }
+`;
 
 const Wrap = styled.div`
   display: flex;
@@ -484,9 +530,12 @@ const PositionsPanel: React.FC = () => {
   const positions = useTradingStore((s) => s.positions);
   const pendingOrders = useTradingStore((s) => s.pendingOrders);
   const closedPositions = useTradingStore((s) => s.closedPositions);
+  const theme = useThemeStore((s) => s.theme);
+  const themeVars = theme === 'light' ? LIGHT_VARS : DARK_VARS;
 
   return (
-    <Wrap>
+    <Wrap data-pp-theme={theme}>
+      <PanelThemeVars $vars={themeVars} />
       <TabBar>
         <Tab $active={activeTab === 'open'} onClick={() => setActiveTab('open')}>
           Positions

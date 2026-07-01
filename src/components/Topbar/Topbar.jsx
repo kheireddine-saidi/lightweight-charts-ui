@@ -6,6 +6,7 @@ import {
     Plus, Star, Trash2, X
 } from 'lucide-react';
 import IndicatorPanel from '../Indicators/IndicatorPanel';
+import ChartSettingsModal from '../ChartSettings/ChartSettingsModal';
 
 const Topbar = ({
     symbol, interval, chartType, indicators, favoriteIntervals, customIntervals,
@@ -18,6 +19,7 @@ const Topbar = ({
     isReplayMode = false, onEditIndicatorSource = null
 }) => {
     const [showIndicators, setShowIndicators] = useState(false);
+    const [showChartSettings, setShowChartSettings] = useState(false);
     const [showTimeframes, setShowTimeframes] = useState(false);
     const [showChartTypes, setShowChartTypes] = useState(false);
     const [showSnapshotMenu, setShowSnapshotMenu] = useState(false);
@@ -658,11 +660,14 @@ const Topbar = ({
                                                 <div className={styles.separatorWrap}><div className={styles.separator}></div></div>
 
 
-                                                <button className={classNames(styles.button, styles.iconButton)} aria-label="Settings">
+                                                <button className={classNames(styles.button, styles.iconButton)} aria-label="Settings" onClick={() => setShowChartSettings(true)}>
                                                     <div className={styles.icon}>
                                                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28" fill="currentColor"><path fillRule="evenodd" d="M18 14a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm-1 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"></path><path fillRule="evenodd" d="M8.5 5h11l5 9-5 9h-11l-5-9 5-9Zm-3.86 9L9.1 6h9.82l4.45 8-4.45 8H9.1l-4.45-8Z"></path></svg>
                                                     </div>
                                                 </button>
+                                                {showChartSettings && (
+                                                    <ChartSettingsModal theme={theme} onClose={() => setShowChartSettings(false)} />
+                                                )}
                                                 <button className={classNames(styles.button, styles.iconButton)} aria-label="Fullscreen" onClick={onFullScreen}>
                                                     <div className={styles.icon}>
                                                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28"><path fill="currentColor" d="M8.5 6A2.5 2.5 0 0 0 6 8.5V11h1V8.5C7 7.67 7.67 7 8.5 7H11V6H8.5zM6 17v2.5A2.5 2.5 0 0 0 8.5 22H11v-1H8.5A1.5 1.5 0 0 1 7 19.5V17H6zM19.5 7H17V6h2.5A2.5 2.5 0 0 1 22 8.5V11h-1V8.5c0-.83-.67-1.5-1.5-1.5zM22 19.5V17h-1v2.5c0 .83-.67 1.5-1.5 1.5H17v1h2.5a2.5 2.5 0 0 0 2.5-2.5z"></path></svg>

@@ -20,6 +20,7 @@ import { useTradeSetupStore } from '../../stores/tradeSetupStore';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
 import { getMagnetPoint } from '../../utils/magnetSnap';
+import { useChartSettingsStore } from '../../stores/chartSettingsStore';
 
 const RR_RATIO = 2;
 
@@ -65,6 +66,91 @@ const TradeSetupTool = ({
   dataRef,
   magnetMode,
 }) => {
+  // ── magnet threshold (configurable in Chart Settings) ─────────────────────
+  const magnetThresholdPx = useChartSettingsStore((s) => s.magnetThresholdPx);
+
+  // ── Live engine-state derivation ──────────────────────────────────────────
+  // ARCHITECTURE: zones in `zones` (passed down from ChartComponent's
+  // committedTradeZones state) store only DRAWING GEOMETRY as their source of
+  // truth (entryLogicalX, slLogicalX, positionId). Once a zone is linked to a
+  // real order/position (positionId set), its TRADING fields — entryPrice,
+  // stopLoss, takeProfit, status, side, fillTime — are no longer authored by
+  // the zone object itself. Instead they are derived live, on every render,
+  // by looking up positionId in tradingStore's positions/pendingOrders/
+  // closedPositions arrays (which are themselves kept in sync with
+  // ExecutionEngine by tradingStore's EventBus subscriptions).
+  //
+  // This replaces the previous approach of manually pushing field updates
+  // into zones from scattered EventBus handlers in App.jsx (ORDER_FILLED →
+  // updateTradeZone, POSITION_CLOSED → updateTradeZone, etc.) — that pattern
+  // required hardcoding a bespoke update path for every single event type,
+  // and was exactly the kind of fragile per-feature wiring that caused zones
+  // to silently fall out of sync (issue: pending zone never flipping to
+  // "open" after an immediate-fill order, TP/SL edits in PositionsPanel never
+  // appearing on the chart, etc).
+  //
+  // Now there is exactly ONE place a zone's trading data comes from once
+  // it's linked to a position: the engine, via tradingStore. App.jsx no
+  // longer needs ANY of that event wiring for trading-data sync — it still
+  // listens for ORDER_CANCELLED to remove an abandoned zone's drawing, and
+  // POSITION_CLOSED isn't needed for trading-data sync anymore (status comes
+  // from looking the id up across all three lists) but zones do need to be
+  // told to stop tracking after a position is fully closed if the user wants
+  // them removed — that remains a deliberate, explicit user action (the
+  // "✕ Close"/"✕ Cancel" button), not implicit on every engine event.
+  const livePositions     = useTradingStore((s) => s.positions);
+  const livePendingOrders = useTradingStore((s) => s.pendingOrders);
+  const liveClosed        = useTradingStore((s) => s.closedPositions);
+
+  const resolvedZones = useMemo(() => {
+    if (!zones?.length) return zones;
+    return zones.map((z) => {
+      if (!z.positionId) return z; // not yet linked to an order — geometry-only zone
+
+      // Look up the live engine record by id, across all three lists.
+      const openPos = livePositions.find((p) => p.id === z.positionId);
+      if (openPos) {
+        return {
+          ...z,
+          status: 'open',
+          side: openPos.side,
+          entryPrice: openPos.entryPrice,
+          stopLoss: openPos.stopLoss ?? null,
+          takeProfit: openPos.takeProfit ?? null,
+          fillTime: openPos.filledTime ?? z.fillTime ?? null,
+        };
+      }
+      const pendingOrd = livePendingOrders.find((p) => p.id === z.positionId);
+      if (pendingOrd) {
+        return {
+          ...z,
+          status: 'pending',
+          side: pendingOrd.side,
+          entryPrice: pendingOrd.entryPrice,
+          stopLoss: pendingOrd.stopLoss ?? null,
+          takeProfit: pendingOrd.takeProfit ?? null,
+        };
+      }
+      const closedPos = liveClosed.find((p) => p.id === z.positionId);
+      if (closedPos) {
+        return {
+          ...z,
+          status: 'closed',
+          side: closedPos.side,
+          entryPrice: closedPos.entryPrice,
+          stopLoss: closedPos.stopLoss ?? null,
+          takeProfit: closedPos.takeProfit ?? null,
+          fillTime: closedPos.filledTime ?? z.fillTime ?? null,
+        };
+      }
+      // positionId set but not found in any list — order was cancelled
+      // before ever filling. Leave the zone's last-known fields as-is;
+      // App.jsx's ORDER_CANCELLED handler is responsible for removing
+      // the zone's drawing entirely in this case.
+      return z;
+    });
+  }, [zones, livePositions, livePendingOrders, liveClosed]);
+
   // ── drawing ───────────────────────────────────────────────────────────────
   const [phase, setPhase] = useState('idle');
   const phaseRef = useRef('idle');
@@ -147,8 +233,8 @@ const TradeSetupTool = ({
     if (!data?.length || !magnetMode) return rawPrice;
     const logical = xToLogical(x, chartApi);
     if (logical == null) return rawPrice;
-    return getMagnetPoint(x, y, chartApi, seriesApi, data, magnetMode).price ?? rawPrice;
-  }, [seriesApi, chartApi, dataRef, magnetMode]);
+    return getMagnetPoint(x, y, chartApi, seriesApi, data, magnetMode, magnetThresholdPx).price ?? rawPrice;
+  }, [seriesApi, chartApi, dataRef, magnetMode, magnetThresholdPx]);
 
   const applyDrag = useCallback((zone, handle, dx, dy, g) => {
     // Closed positions: nothing can be adjusted
@@ -234,7 +320,7 @@ const TradeSetupTool = ({
 
   // ── delete / close selected zone ──────────────────────────────────────────
   const deleteZone = useCallback((zoneId) => {
-    const zone = zones.find(z => z.id === zoneId);
+    const zone = resolvedZones.find(z => z.id === zoneId);
     if (!zone) return;
 
     const store = useTradingStore.getState();
@@ -251,17 +337,18 @@ const TradeSetupTool = ({
     }
     onZonesChange(prev => prev.filter(z => z.id !== zoneId));
     setSelectedId(null);
-  }, [zones, onZonesChange]);
+  }, [resolvedZones, onZonesChange]);
 
   // ── close position linked to zone ──────────────────────────────────────────
   const closeZonePosition = useCallback((zoneId) => {
-    const zone = zones.find(z => z.id === zoneId);
+    const zone = resolvedZones.find(z => z.id === zoneId);
     if (!zone?.positionId) return;
     const mktPrice = useMarketStore.getState().currentPrice ?? zone.entryPrice;
     useTradingStore.getState().closePosition(zone.positionId, mktPrice, Math.floor(Date.now() / 1000));
-    // Zone status will update to 'closed' via POSITION_CLOSED event in App.jsx
+    // Zone status updates to 'closed' automatically — derived live from
+    // tradingStore.closedPositions on the next render (see resolvedZones above).
     setSelectedId(null);
-  }, [zones]);
+  }, [resolvedZones]);
 
   // ── reset on tool deactivate ──────────────────────────────────────────────
   useEffect(() => {
@@ -295,7 +382,7 @@ const TradeSetupTool = ({
 
       const data = dataRef?.current;
       const snappedPrice = data?.length
-        ? getMagnetPoint(x, y, chartApi, seriesApi, data, magnetMode).price
+        ? getMagnetPoint(x, y, chartApi, seriesApi, data, magnetMode, magnetThresholdPx).price
         : rawPrice;
 
       setLiveCursor({
@@ -309,7 +396,7 @@ const TradeSetupTool = ({
     return () => {
       try { chartApi.unsubscribeCrosshairMove(onCrosshairMove); } catch {}
     };
-  }, [active, chartApi, seriesApi, containerRef, dims.w, dataRef, magnetMode]);
+  }, [active, chartApi, seriesApi, containerRef, dims.w, dataRef, magnetMode, magnetThresholdPx]);
 
   // ── drawing: mousedown on container (capture, only in active mode) ────────
   // Click 1: set entry; Click 2: set SL and commit zone.
@@ -393,6 +480,18 @@ const TradeSetupTool = ({
         }
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Don't hijack Delete/Backspace while the user is typing in a form
+        // field anywhere in the app (e.g. editing TP/SL/entry in
+        // PositionsPanel's EditablePrice, or any other input/textarea).
+        // Without this guard, pressing Backspace while correcting a typed
+        // number would delete the currently-selected chart trade box.
+        const target = e.target;
+        const isEditableField =
+          target?.tagName === 'INPUT' ||
+          target?.tagName === 'TEXTAREA' ||
+          target?.isContentEditable;
+        if (isEditableField) return;
+
         if (selectedId) deleteZone(selectedId);
       }
     };
@@ -405,14 +504,22 @@ const TradeSetupTool = ({
   // pointerdown initiates, but all subsequent move/up events are tracked at
   // window level.  This means the chart never sees pointermove/up during drag.
   const dragRef = useRef(null);
-  // dragRef: { zoneId, handle, startClientX, startClientY, startGeom, startZone }
+  // dragRef: { zoneId, handle, startClientX, startClientY, startGeom, startZone, hasMoved }
+
+  // Minimum pixel movement before a mousedown→mouseup is treated as an
+  // actual drag. Below this threshold it's a plain click (select only) —
+  // this prevents applyDrag's price round-trip (pixel→price→pixel, plus
+  // magnet snapping) from nudging entry/SL/TP on a simple click-to-select,
+  // which previously caused the TP line to visibly jump/shrink the box
+  // every time a zone was merely clicked.
+  const DRAG_THRESHOLD_PX = 3;
 
   const startDrag = useCallback((e, zoneId, handle) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
 
-    const zone = zones.find(z => z.id === zoneId);
+    const zone = resolvedZones.find(z => z.id === zoneId);
     if (!zone) return;
     const g = projectZone(zone);
     if (!g) return;
@@ -423,9 +530,10 @@ const TradeSetupTool = ({
       startClientY: e.clientY,
       startGeom: { ...g },
       startZone: { ...zone },
+      hasMoved: false,
     };
     setSelectedId(zoneId);
-  }, [zones, projectZone]);
+  }, [resolvedZones, projectZone]);
 
   useEffect(() => {
     const onMove = (e) => {
@@ -434,6 +542,15 @@ const TradeSetupTool = ({
       const ds = dragRef.current;
       const dx = e.clientX - ds.startClientX;
       const dy = e.clientY - ds.startClientY;
+
+      // Only start actually applying drag deltas once the cursor has moved
+      // past the threshold. Before that, do nothing — this keeps a simple
+      // click-then-release from mutating any price.
+      if (!ds.hasMoved) {
+        if (Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) return;
+        ds.hasMoved = true;
+      }
+
       const updated = applyDrag(ds.startZone, ds.handle, dx, dy, ds.startGeom);
       onZonesChange(prev => prev.map(z => z.id === updated.id ? updated : z));
     };
@@ -441,6 +558,15 @@ const TradeSetupTool = ({
     const onUp = (e) => {
       if (!dragRef.current) return;
       const ds = dragRef.current;
+
+      // No movement beyond the threshold → this was a click, not a drag.
+      // Don't touch the zone's prices at all; it's already selected via
+      // startDrag's setSelectedId call.
+      if (!ds.hasMoved) {
+        dragRef.current = null;
+        return;
+      }
+
       const dx = e.clientX - ds.startClientX;
       const dy = e.clientY - ds.startClientY;
       const updated = applyDrag(ds.startZone, ds.handle, dx, dy, ds.startGeom);
@@ -746,7 +872,7 @@ const TradeSetupTool = ({
     };
   }, [liveCursor]);
 
-  if (!active && zones.length === 0) return null;
+  if (!active && resolvedZones.length === 0) return null;
 
   return (
     <svg
@@ -760,8 +886,9 @@ const TradeSetupTool = ({
         overflow: 'visible',
       }}
     >
-      {/* Committed zones */}
-      {zones.map(z => (
+      {/* Committed zones — rendered from resolvedZones so entry/SL/TP/status
+          always reflect the engine's live truth for linked positions/orders */}
+      {resolvedZones.map(z => (
         <ZoneGraphic
           key={z.id}
           zone={z}

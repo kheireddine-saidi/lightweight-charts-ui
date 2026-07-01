@@ -5,8 +5,10 @@ import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
 import { useTradeSetupStore } from '../../stores/tradeSetupStore';
 import { useWorkspaceStore } from '../../features/workspace/WorkspaceStore';
+import { useExecutionSettingsStore } from '../../stores/executionSettingsStore';
 import { EventBus, Events } from '../../core/EventBus';
 import { validateTPSL } from '../../utils/tpslValidation';
+import { calculateRiskBasedPositionSize } from '../../utils/positionSizing';
 
 /* ─── Design tokens ─── */
 const C = {
@@ -229,11 +231,13 @@ const TradingPanel = ({ currentTime }) => {
   const [fromSetup, setFromSetup]   = useState(false);
   const [pendingZoneId, setPendingZoneId] = useState(null);
   const [prevPrice, setPrevPrice]   = useState(null);
+  const [sizeOverridden, setSizeOverridden] = useState(false);
 
   const { openPosition, balance, equity, reservedMargin = 0 } = useTradingStore();
   const currentPrice   = useMarketStore(s => s.currentPrice);
   const tradeSetup     = useTradeSetupStore(s => s);
   const symbol         = useWorkspaceStore(s => s.getActiveChart()?.symbol ?? 'BTCUSDT');
+  const riskPerTradePercent = useExecutionSettingsStore(s => s.riskPerTradePercent);
 
   // Track price direction for colour indicator
   useEffect(() => {
@@ -251,11 +255,20 @@ const TradingPanel = ({ currentTime }) => {
   const marginUsedPct  = balance > 0 ? (reservedMargin / balance) * 100 : 0;
 
   const setFromSlider = (pct) => {
+    setSizeOverridden(true);
     setSlider(pct);
     const val = (pct / 100) * maxPosVal;
     setQuoteSize(val > 0 ? val.toFixed(2) : '');
   };
   const handleSizeChange = (v) => {
+    // Clearing the field back to empty returns to auto-size mode.
+    // Assumption: empty field → user wants auto-sizing restored.
+    // (Flagged as assumption — caller may want to reconsider this default.)
+    if (v === '') {
+      setSizeOverridden(false);
+    } else {
+      setSizeOverridden(true);
+    }
     setQuoteSize(v);
     const num = parseFloat(v) || 0;
     setSlider(Math.round(maxPosVal > 0 ? Math.min(100, (num / maxPosVal) * 100) : 0));
@@ -278,6 +291,24 @@ const TradingPanel = ({ currentTime }) => {
   const riskPct       = riskAmt && freeMargin > 0 ? (riskAmt / freeMargin) * 100 : null;
   const rrRatio       = riskAmt && rewardAmt ? rewardAmt / riskAmt : null;
   const riskLevel     = riskPct == null ? 'low' : riskPct > 5 ? 'high' : riskPct > 2 ? 'med' : 'low';
+
+  // ── Auto-sizing effect ─────────────────────────────────────────────────
+  // Recomputes quoteSize so the risk at SL equals exactly riskPerTradePercent
+  // of balance. Only active while the user hasn't manually overridden the size.
+  // Call setQuoteSize/setSlider directly here (not handleSizeChange/setFromSlider)
+  // to avoid flipping sizeOverridden back to true.
+  useEffect(() => {
+    if (sizeOverridden) return;
+    if (!slNum || !entryPrice) return;
+    const sizing = calculateRiskBasedPositionSize({
+      balance, riskPercent: riskPerTradePercent, entryPrice, stopLossPrice: slNum, leverage,
+    });
+    if (sizing) {
+      setQuoteSize(sizing.quoteSize.toFixed(2));
+      setSlider(Math.round(maxPosVal > 0 ? Math.min(100, (sizing.quoteSize / maxPosVal) * 100) : 0));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slNum, entryPrice, leverage, riskPerTradePercent, sizeOverridden]);
 
   // ── Trade Setup Tool sync ──────────────────────────────────────────────
   useEffect(() => {
@@ -325,6 +356,7 @@ const TradingPanel = ({ currentTime }) => {
 
     const positionId = openPosition({
       side,
+      symbol,   // ADD: was missing — every order was silently tagged 'BTCUSDT' without this
       type:          orderType,
       entryPrice:    currentPrice,
       limitPrice:    orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined,
@@ -334,6 +366,7 @@ const TradingPanel = ({ currentTime }) => {
       requiredMargin,
       stopLoss:      slNum ?? undefined,
       takeProfit:    tpNum ?? undefined,
+      sizeOverridden,
       entryTime:     currentTime ?? Math.floor(Date.now() / 1000),
     });
 
@@ -348,6 +381,7 @@ const TradingPanel = ({ currentTime }) => {
     setFromSetup(false); setPendingZoneId(null);
     if (orderType === 'limit') setLimitPrice('');
     setQuoteSize(''); setSlider(0);
+    setSizeOverridden(false); // each new order starts back in auto-size mode
   }, [orderType, quoteSizeNum, positionSize, limitPrice, leverage, requiredMargin, freeMargin,
       slNum, tpNum, currentTime, currentPrice, entryPrice, openPosition, pendingZoneId]);
 

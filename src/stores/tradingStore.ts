@@ -149,7 +149,7 @@ export const useTradingStore = create<TradingState>((set, get) => {
       const beforeClosed  = new Set(executionEngine.closedTrades.map((p: any) => p.id));
 
       // Run through engine (emits events → _syncFromEngine auto-called)
-      executionEngine._onCandle(syntheticCandle);
+      executionEngine._onCandle('__legacy__', syntheticCandle);
 
       // Derive what was filled/closed in this tick
       const filled = executionEngine.positions.filter((p: any) => !beforeFilled.has(p.id));

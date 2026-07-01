@@ -18,7 +18,7 @@ export function useReplayEngine() {
     return unsub;
   }, []);
 
-  const load = useCallback((data) => replayEngine.load(data), []);
+  const load = useCallback((data, symbol) => replayEngine.load(data, symbol), []);
   const play = useCallback(() => replayEngine.play(), []);
   const pause = useCallback(() => replayEngine.pause(), []);
   const stop = useCallback(() => replayEngine.stop(), []);

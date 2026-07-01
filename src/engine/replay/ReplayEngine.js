@@ -13,9 +13,10 @@ import { EventBus, Events } from '../../core/EventBus';
 export class ReplayEngine {
   constructor() {
     this.clock = new SimulationClock();
+    this._activeSymbol = null;
 
     this.clock.onCandle = (candle, index) => {
-      EventBus.emit(Events.CANDLE, { candle, index });
+      EventBus.emit(Events.CANDLE, { candle, index, symbol: this._activeSymbol });
     };
 
     this.clock.onEnd = () => {
@@ -29,7 +30,10 @@ export class ReplayEngine {
 
   // ─── Delegate to SimulationClock ────────────────────────────────────────
 
-  load(data)       { this.clock.load(data); }
+  load(data, symbol) {
+    this._activeSymbol = symbol ?? null;
+    this.clock.load(data);
+  }
   play()           { this.clock.play(); }
   pause()          { this.clock.pause(); }
   stop()           { this.clock.stop(); }

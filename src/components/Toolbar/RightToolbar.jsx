@@ -1,5 +1,5 @@
 import React from 'react';
-import { List, Clock, BarChart2 } from 'lucide-react';
+import { List, Clock, BarChart2, Settings } from 'lucide-react';
 import styles from './RightToolbar.module.css';
 import classNames from 'classnames';
 
@@ -8,6 +8,7 @@ const RightToolbar = ({ activePanel, onPanelChange, badges = {} }) => {
         { id: 'watchlist', icon: List, label: 'Watchlist' },
         { id: 'trading', icon: BarChart2, label: 'Trading Panel' },
         { id: 'alerts', icon: Clock, label: 'Alerts' },
+        { id: 'settings', icon: Settings, label: 'Simulation Settings' },
     ];
 
     const handleToolClick = (id) => {

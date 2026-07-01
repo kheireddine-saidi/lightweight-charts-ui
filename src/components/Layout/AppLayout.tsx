@@ -17,6 +17,7 @@ import SourceEditor from '../Indicators/SourceEditor';
 import Watchlist from '../Watchlist/Watchlist';
 import AlertsPanel from '../Alerts/AlertsPanel';
 import RightToolbar from '../Toolbar/RightToolbar';
+import SimulationSettingsPanel from '../Settings/SimulationSettingsPanel';
 
 /* ─── Splitter handle ─── */
 const HSplitter = styled.div<{ $dragging: boolean }>`
@@ -292,6 +293,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               onPauseAlert={onPauseAlert}
             />
           )}
+          {activeRightPanel === 'settings' && <SimulationSettingsPanel />}
         </RightPanel>
 
         <RightToolbarArea>

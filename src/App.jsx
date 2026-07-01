@@ -29,6 +29,7 @@ import { useWatchlist } from './features/watchlist/useWatchlist';
 import { useAlerts } from './features/alerts/useAlerts';
 import { useReplaySync } from './features/replay/useReplaySync';
 import { EventBus, Events } from './core/EventBus';
+import { useTradingStore } from './stores/tradingStore';
 
 // ── Workspace state — extracted from App ────────────────────────────────────
 import { useWorkspaceStore } from './features/workspace/WorkspaceStore';
@@ -330,8 +331,19 @@ function App() {
     // Invalid TP/SL modification (e.g. dragging a chart zone's TP/SL line
     // to a position that would trigger an immediate market execution) —
     // the engine already rejected the change; surface why via toast.
-    const unsubTpslRejected = EventBus.on(Events.TPSL_REJECTED, ({ message }) => {
+    const unsubTpslRejected = EventBus.on(Events.TPSL_REJECTED, ({ id, field, message }) => {
       if (message) showToast(message, 'error');
+      // Revert the optimistically-drawn zone to the engine's actual current value.
+      // Without this the box stays at the invalid position while the engine's real SL/TP is unchanged.
+      const state = useTradingStore.getState();
+      const current = state.positions.find(p => p.id === id) ?? state.pendingOrders.find(p => p.id === id);
+      if (current && (field === 'sl' || field === 'tp')) {
+        // Zones use slPrice/tpPrice; positions/orders use stopLoss/takeProfit
+        const revertFields = field === 'sl' ? { slPrice: current.stopLoss } : { tpPrice: current.takeProfit };
+        Object.values(chartRefs.current).forEach((ref) => {
+          ref?.updateTradeZone?.(null, revertFields, id, undefined);
+        });
+      }
     });
     return () => {
       unsubDrawn(); unsubLink(); unsubFilled(); unsubCancelled();
