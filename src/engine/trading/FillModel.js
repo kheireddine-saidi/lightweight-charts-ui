@@ -4,12 +4,12 @@
  * Fill logic (correct market semantics):
  * ─────────────────────────────────────
  * LONG LIMIT (buy limit):
- *   - If limitPrice >= currentPrice → fill immediately at currentPrice (above-market buy = market order)
- *   - If limitPrice < currentPrice  → fill when price ticks DOWN to or below limitPrice
+ *   - If currentPrice <= limitPrice → market is at or below limit (better price for buyer) → fill immediately at currentPrice
+ *   - If currentPrice > limitPrice  → market is above limit → wait for price to tick DOWN to or below limitPrice
  *
  * SHORT LIMIT (sell limit):
- *   - If limitPrice <= currentPrice → fill immediately at currentPrice (below-market sell = market order)
- *   - If limitPrice > currentPrice  → fill when price ticks UP to or above limitPrice
+ *   - If currentPrice >= limitPrice → market is at or above limit (better price for seller) → fill immediately at currentPrice
+ *   - If currentPrice < limitPrice  → market is below limit → wait for price to tick UP to or above limitPrice
  *
  * SL/TP use the same real-time tick logic — no need to wait for candle close.
  *
@@ -48,10 +48,10 @@ export class FillModel {
    * Real-time fill check — called on every price tick.
    *
    * For pending limit/stop orders:
-   *   Long limit  ≥ currentPrice → immediate fill at currentPrice
-   *   Long limit  < currentPrice → fill when currentPrice ticks ≤ limitPrice
-   *   Short limit ≤ currentPrice → immediate fill at currentPrice
-   *   Short limit > currentPrice → fill when currentPrice ticks ≥ limitPrice
+   *   Long limit:  currentPrice ≤ limitPrice → immediate fill at currentPrice (market is cheaper — better for buyer)
+   *                currentPrice > limitPrice → fill when currentPrice ticks ≤ limitPrice
+   *   Short limit: currentPrice ≥ limitPrice → immediate fill at currentPrice (market is higher — better for seller)
+   *                currentPrice < limitPrice → fill when currentPrice ticks ≥ limitPrice
    *
    * @param {number} currentPrice  live tick price
    * @param {number} prevPrice     previous tick price (for crossover detection)
@@ -69,13 +69,15 @@ export class FillModel {
 
     if (order.type === 'limit') {
       if (order.side === 'long') {
-        // Buy limit: fill at or above market → immediate; otherwise wait for price to drop to limit
-        if (limitPrice >= currentPrice) return currentPrice;
+        // Buy limit: market is at or BELOW limit → better price for buyer → fill immediately at market
+        // Market ABOVE limit → wait for price to drop to the limit
+        if (currentPrice <= limitPrice) return currentPrice;
         // Crossed from above to at/below limit (price ticked down through)
         if (prevPrice !== null && prevPrice > limitPrice && currentPrice <= limitPrice) return limitPrice;
       } else {
-        // Sell limit: fill at or below market → immediate; otherwise wait for price to rise to limit
-        if (limitPrice <= currentPrice) return currentPrice;
+        // Sell limit: market is at or ABOVE limit → better price for seller → fill immediately at market
+        // Market BELOW limit → wait for price to rise to the limit
+        if (currentPrice >= limitPrice) return currentPrice;
         // Crossed from below to at/above limit (price ticked up through)
         if (prevPrice !== null && prevPrice < limitPrice && currentPrice >= limitPrice) return limitPrice;
       }

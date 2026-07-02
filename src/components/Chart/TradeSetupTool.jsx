@@ -193,26 +193,20 @@ const TradeSetupTool = ({
     if (!chartApi || !seriesApi) return null;
 
     // Left edge: when order is filled, snap to the fill candle's time position.
-    // This moves the left side of the box to the candle where the fill happened.
-    // The RIGHT edge (slLogicalX) is kept as-is to preserve the original box width.
-    let x1;
+    const originalX1 = logicalToX(z.entryLogicalX, chartApi);
+    let x1 = originalX1;
     if ((z.status === 'open' || z.status === 'closed') && z.fillTime != null) {
       try {
-        const ts  = chartApi.timeScale();
+        const ts    = chartApi.timeScale();
         const fillX = ts.timeToCoordinate(z.fillTime);
-        x1 = fillX != null ? fillX : logicalToX(z.entryLogicalX, chartApi);
-      } catch {
-        x1 = logicalToX(z.entryLogicalX, chartApi);
-      }
-    } else {
-      x1 = logicalToX(z.entryLogicalX, chartApi);
+        if (fillX != null) x1 = fillX;
+      } catch { /* fallback to originalX1 already set */ }
     }
 
-    // Right edge always uses slLogicalX so width is preserved after fill-snap.
-    // When the order was first drawn, slLogicalX was set to a logical index further
-    // right. After fill, x1 moves left to the fill candle but x2 stays the same,
-    // keeping the box width identical to what the user drew.
-    const x2     = logicalToX(z.slLogicalX, chartApi);
+    // Preserve the original drawn width: shift x2 by the same pixel delta as x1.
+    // Without this, snapping x1 left to the fill candle would widen the box.
+    const x1Delta = originalX1 != null ? x1 - originalX1 : 0;
+    const x2      = (logicalToX(z.slLogicalX, chartApi) ?? 0) + x1Delta;
     const entryY = priceToY(z.entryPrice, seriesApi);
     const slY    = priceToY(z.slPrice,    seriesApi);
     const tpY    = priceToY(z.tpPrice,    seriesApi);
@@ -506,6 +500,11 @@ const TradeSetupTool = ({
   const dragRef = useRef(null);
   // dragRef: { zoneId, handle, startClientX, startClientY, startGeom, startZone, hasMoved }
 
+  // Tracks the live in-flight drag zone so the SVG can render it immediately
+  // without waiting for resolvedZones (which is gated on the trading store update).
+  // Set on every mousemove during drag; cleared on mouseup.
+  const [liveDragZone, setLiveDragZone] = useState(null);
+
   // Minimum pixel movement before a mousedown→mouseup is treated as an
   // actual drag. Below this threshold it's a plain click (select only) —
   // this prevents applyDrag's price round-trip (pixel→price→pixel, plus
@@ -552,7 +551,10 @@ const TradeSetupTool = ({
       }
 
       const updated = applyDrag(ds.startZone, ds.handle, dx, dy, ds.startGeom);
+      // Update both the zone list (for non-resolved zones) and the live drag
+      // override (so resolvedZones' store-pinned prices don't freeze the visual).
       onZonesChange(prev => prev.map(z => z.id === updated.id ? updated : z));
+      setLiveDragZone(updated);
     };
 
     const onUp = (e) => {
@@ -564,6 +566,7 @@ const TradeSetupTool = ({
       // startDrag's setSelectedId call.
       if (!ds.hasMoved) {
         dragRef.current = null;
+        setLiveDragZone(null);
         return;
       }
 
@@ -573,6 +576,7 @@ const TradeSetupTool = ({
       onZonesChange(prev => prev.map(z => z.id === updated.id ? updated : z));
       syncZoneToOrder(updated);
       dragRef.current = null;
+      setLiveDragZone(null);
     };
 
     window.addEventListener('mousemove', onMove, { passive: false });
@@ -887,16 +891,21 @@ const TradeSetupTool = ({
       }}
     >
       {/* Committed zones — rendered from resolvedZones so entry/SL/TP/status
-          always reflect the engine's live truth for linked positions/orders */}
-      {resolvedZones.map(z => (
-        <ZoneGraphic
-          key={z.id}
-          zone={z}
-          geom={projectZone(z)}
-          isSelected={selectedId === z.id}
-          active={active}
-        />
-      ))}
+          always reflect the engine's live truth for linked positions/orders.
+          During an active drag we substitute the live drag zone so the entry
+          line moves immediately without waiting for the trading store to sync. */}
+      {resolvedZones.map(z => {
+        const renderZone = (liveDragZone && liveDragZone.id === z.id) ? liveDragZone : z;
+        return (
+          <ZoneGraphic
+            key={z.id}
+            zone={renderZone}
+            geom={projectZone(renderZone)}
+            isSelected={selectedId === z.id}
+            active={active}
+          />
+        );
+      })}
 
       {/* Live preview during drawing */}
       {active && phase === 'entry_set' && liveGeom && (

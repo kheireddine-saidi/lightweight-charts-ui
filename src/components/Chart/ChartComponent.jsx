@@ -91,6 +91,7 @@ const ChartComponent = forwardRef(({
     const chartReadyRef = useRef(false); // Track when chart is fully stable and ready for indicator additions
     const lineToolManagerRef = useRef(null);
     const priceScaleTimerRef = useRef(null); // Ref for the candle countdown timer
+    const isTimerVisibleRef = useRef(isTimerVisible); // Always-current copy of isTimerVisible prop
     // wsRef removed — ChartDataManager owns the WebSocket subscription (Phase 4)
     const chartTypeRef = useRef(chartType);
     const dataRef = useRef([]);
@@ -836,6 +837,7 @@ useImperativeHandle(ref, () => ({
     }, [isDrawingsHidden]);
 
     useEffect(() => {
+        isTimerVisibleRef.current = isTimerVisible;
         drawingManagerRef.current?.syncTimerVisible(isTimerVisible, mainSeriesRef.current);
         priceScaleTimerRef.current = drawingManagerRef.current?.priceScaleTimer ?? null;
     }, [isTimerVisible]);

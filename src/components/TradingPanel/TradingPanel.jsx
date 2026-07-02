@@ -339,12 +339,16 @@ const TradingPanel = ({ currentTime }) => {
     }
     setTpWarning(null); setSlWarning(null);
 
+    const parsedLimitPrice = orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined;
     const positionId = openPosition({
       side,
       symbol,   
       type:          orderType,
-      entryPrice:    currentPrice,
-      limitPrice:    orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined,
+      // For limit orders use the limit price as entryPrice so pending orders
+      // display the user's target entry, not the current market price.
+      // For market orders, fill at the current market price immediately.
+      entryPrice:    parsedLimitPrice ?? currentPrice,
+      limitPrice:    parsedLimitPrice,
       positionSize,
       quoteSize:     quoteSizeNum,
       leverage,

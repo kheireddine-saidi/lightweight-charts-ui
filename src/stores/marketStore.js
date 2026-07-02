@@ -14,13 +14,15 @@ export const useMarketStore = create((set) => {
     // PRICE_TICK fires on every WS message (including in-progress candles)
     EventBus.on(Events.PRICE_TICK, ({ price }) => {
       if (price != null && Number.isFinite(price)) {
-        set({ currentPrice: price });
+        // Defer to avoid "setState during render" warnings in React StrictMode
+        // when the EventBus fires synchronously during component initialization.
+        setTimeout(() => set({ currentPrice: price }), 0);
       }
     });
     // Fallback for replay mode (which only emits CANDLE events)
     EventBus.on(Events.CANDLE, ({ candle }) => {
       if (candle?.close != null) {
-        set({ currentPrice: candle.close });
+        setTimeout(() => set({ currentPrice: candle.close }), 0);
       }
     });
   }
