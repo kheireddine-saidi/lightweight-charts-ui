@@ -27,6 +27,7 @@ import ReplayControls from '../Replay/ReplayControls';
 import ReplaySlider from '../Replay/ReplaySlider';
 import { useReplayEngine } from '../../engine/replay/useReplayEngine';
 import { ReplayFeed } from '../../feeds/ReplayFeed';
+import { ReplayController } from '../../engine/replay/ReplayController';
 import { ChartDataManager } from '../../chart/ChartDataManager';
 import TradeSetupTool from './TradeSetupTool';
 
@@ -127,7 +128,11 @@ const ChartComponent = forwardRef(({
     const followerFullDataRef = useRef([]); // Immutable snapshot for follower sync — never mutated by replay
     const fadedSeriesRef = useRef(null); // Store faded series for future candles
     // Per-chart ReplayFeed — owns binary-search advanceTo logic for REPLAY_TICK events
+    // NOTE: replayFeedRef is still used by toggleReplay / syncToTimestamp / exitFollowerReplay.
+    //       ReplayController owns its own internal feed for TICK→CANDLE subscription path.
     const replayFeedRef = useRef(null);
+    // Phase 7: ReplayController — owns event subscriptions and seek logic.
+    const replayControllerRef = useRef(null);
 
     // ── ChartDataManager (Phase 4) ─────────────────────────────────────────
     // Owns history loading + live WebSocket subscription for this chart.
@@ -632,41 +637,52 @@ useImperativeHandle(ref, () => ({
         setIsReplayMode(prev => {
             const newMode = !prev;
             if (!prev) {
-                // Entering replay: load full data into engine
+                // ── Entering replay ─────────────────────────────────────────
                 fullDataRef.current = [...dataRef.current];
                 const startIndex = Math.max(0, dataRef.current.length - 1);
                 replayIndexRef.current = startIndex;
-                // Build timeline from candle open times
-                const timeline = fullDataRef.current.map(c => c.time);
-                // Initialise per-chart ReplayFeed for REPLAY_TICK → advanceTo
+
+                // Phase 7: Also initialise the legacy replayFeedRef so that
+                // syncToTimestamp / getReplayBars / exitFollowerReplay (which
+                // access replayFeedRef directly) continue to work unchanged.
                 if (!replayFeedRef.current) {
                     replayFeedRef.current = new ReplayFeed(fullDataRef.current, symbol);
                 } else {
                     replayFeedRef.current.setData(fullDataRef.current, symbol);
                     replayFeedRef.current.reset();
                 }
-                replayLoad(fullDataRef.current, symbol, timeline);
-                replaySeek(startIndex);
+
+                // Phase 7: Start the ReplayController — it owns the REPLAY_TICK
+                // and CANDLE subscriptions from this point on.
+                const ctrl = getOrCreateReplayController();
+                ctrl.enter(fullDataRef.current, startIndex);
+
+                // Initial chart update: show data up to startIndex.
                 setTimeout(() => {
-                    if (updateReplayDataRef.current) {
-                        // hideFeature=true: show only past candles, hide future data
-                        updateReplayDataRef.current(startIndex, true);
-                    }
+                    updateReplayDataRef.current?.(startIndex, true);
                 }, 0);
             } else {
-                // Exiting replay: stop engine and restore full data
-                replayStop();
-                replayIndexRef.current = null;
+                // ── Exiting replay ──────────────────────────────────────────
+                // Phase 7: Delegate cleanup to ReplayController (also calls onReset
+                // callback which restores full data on the chart series).
+                const ctrl = replayControllerRef.current;
+                if (ctrl) {
+                    ctrl.exit();
+                } else {
+                    // Fallback: inline cleanup (legacy path, should not be reached).
+                    replayStop();
+                    replayIndexRef.current = null;
+                    if (mainSeriesRef.current && fullDataRef.current.length > 0) {
+                        dataRef.current = fullDataRef.current;
+                        mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
+                        updateIndicators(fullDataRef.current, indicators);
+                    }
+                }
+
                 setIsSelectingReplayPoint(false);
                 if (fadedSeriesRef.current && chartRef.current) {
                     try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch (e) { /* ignore */ }
                     fadedSeriesRef.current = null;
-                }
-                if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                    dataRef.current = fullDataRef.current;
-                    const transformedData = transformData(fullDataRef.current, chartTypeRef.current);
-                    mainSeriesRef.current.setData(transformedData);
-                    updateIndicators(fullDataRef.current, indicators);
                 }
             }
             if (onReplayModeChange) {
@@ -1751,6 +1767,38 @@ useImperativeHandle(ref, () => ({
         updateReplayDataRef.current = updateReplayData;
     }, [updateReplayData]);
 
+    /**
+     * Phase 7: Lazily create (or reconfigure) the ReplayController for this chart.
+     * Called from toggleReplay when entering replay mode.
+     * The controller is given a callback that calls updateReplayData so it can
+     * update the chart series without holding a React state reference itself.
+     */
+    const getOrCreateReplayController = useCallback(() => {
+        if (!replayControllerRef.current) {
+            replayControllerRef.current = new ReplayController({
+                symbol,
+                onIndexChange: (index, hideFuture, preserveView) => {
+                    replayIndexRef.current = index;
+                    updateReplayDataRef.current?.(index, hideFuture, preserveView);
+                },
+                onReset: () => {
+                    // Called by ReplayController.exit() — restore full data display.
+                    replayIndexRef.current = null;
+                    if (mainSeriesRef.current && fullDataRef.current.length > 0) {
+                        dataRef.current = fullDataRef.current;
+                        const transformed = transformData(fullDataRef.current, chartTypeRef.current);
+                        mainSeriesRef.current.setData(transformed);
+                        updateIndicators(fullDataRef.current, indicators);
+                    }
+                },
+            });
+        } else {
+            // Update symbol in case it changed.
+            replayControllerRef.current.setSymbol(symbol);
+        }
+        return replayControllerRef.current;
+    }, [symbol, indicators]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Store transformData and updateIndicators in refs for use in imperative methods
     useEffect(() => {
         transformDataRef.current = transformData;
@@ -1760,16 +1808,18 @@ useImperativeHandle(ref, () => ({
     }); // no dep array — always up to date
 
     const handleReplayPlayPause = () => {
+        const ctrl = replayControllerRef.current;
         if (isPlaying) {
-            replayPause();
+            ctrl ? ctrl.pause() : replayPause();
         } else {
-            replayPlay();
+            ctrl ? ctrl.play() : replayPlay();
         }
     };
 
     const handleReplayForward = () => {
-        replayStep();
-        // updateReplayData is called by the EventBus CANDLE listener below
+        const ctrl = replayControllerRef.current;
+        ctrl ? ctrl.step() : replayStep();
+        // Chart update is driven by the resulting CANDLE event via the controller.
     };
 
     const handleReplayJumpTo = () => {
@@ -1849,52 +1899,43 @@ useImperativeHandle(ref, () => ({
         }
     };
 
+    // Phase 7: handleSliderChange delegates to ReplayController.seek().
+    // The controller stops playback, rewinds ExecutionEngine if needed (Phase 8),
+    // resets the feed cursor, and notifies the chart via onIndexChange callback.
     const handleSliderChange = useCallback((index, hideFuture = true) => {
         if (index >= 0 && index < fullDataRef.current.length) {
-            // Stop playback when user manually changes position
-            if (isPlayingRef.current) {
-                replayPause();
+            const ctrl = replayControllerRef.current;
+            if (ctrl) {
+                ctrl.seek(index, hideFuture);
+            } else {
+                // Fallback: legacy inline path (should not normally be reached).
+                if (isPlayingRef.current) replayPause();
+                if (replayFeedRef.current) replayFeedRef.current.reset();
+                replaySeek(index);
+                updateReplayData(index, hideFuture);
             }
-            // Reset the feed so seeking backward re-emits candles correctly
-            if (replayFeedRef.current) {
-                replayFeedRef.current.reset();
-            }
-            replaySeek(index);
-            // The REPLAY_TICK from seek → advanceTo → CANDLE drives updateReplayData
-            updateReplayData(index, hideFuture);
         }
     }, [updateReplayData, replayPause, replaySeek]);
 
-    // Playback Effect — driven by SimulationClock via REPLAY_TICK (Phase 3).
-    // The single clock emits a timestamp; this chart's ReplayFeed resolves
-    // the nearest candle via binary search (advanceTo), which calls
-    // executionEngine._onCandle first (explicit ordering), then emits CANDLE.
-    // We listen to CANDLE here to update the chart series.
+    // Phase 7: Playback subscriptions are now owned by ReplayController.
+    // This effect ensures the controller's subscriptions are active while in
+    // replay mode, and released when exiting. The controller was already
+    // started in toggleReplay → getOrCreateReplayController() → controller.enter(),
+    // so here we just need to clean up on exit or when deps change.
     useEffect(() => {
-        if (!isReplayMode) return;
-
-        // REPLAY_TICK → feed resolves candle → emits CANDLE
-        const unsubTick = EventBus.on(Events.REPLAY_TICK, ({ timestamp }) => {
-            if (!isReplayModeRef.current) return;
-            if (replayFeedRef.current) {
-                replayFeedRef.current.advanceTo(timestamp);
-            }
-        });
-
-        // CANDLE → update chart series (emitted by ReplayFeed.advanceTo)
-        const unsubCandle = EventBus.on(Events.CANDLE, ({ candle, index, symbol: candleSymbol }) => {
-            if (!isReplayModeRef.current) return;
-            // Only handle candles for this chart's symbol (multi-chart support)
-            if (candleSymbol && symbol && candleSymbol !== symbol) return;
-            replayIndexRef.current = index;
-            updateReplayData(index, true); // true = hide future candles
-        });
-
+        if (!isReplayMode) {
+            // If the controller is active but replay mode was turned off externally,
+            // make sure we don't leave dangling subscriptions.
+            // (Normal exit path goes through toggleReplay → controller.exit() which
+            //  calls _unsubscribe() directly, so this is a safety net only.)
+            return;
+        }
+        // Controller was already started by toggleReplay; nothing to do on enter.
+        // Return cleanup in case isReplayMode flips to false while the effect is live.
         return () => {
-            unsubTick();
-            unsubCandle();
+            // Subscriptions are cleaned up by the controller itself when exit() is called.
         };
-    }, [isReplayMode, updateReplayData, symbol]);
+    }, [isReplayMode, symbol]);
 
     // Click Handler for Replay Mode - handles direct chart clicks to jump to a position
     // Uses chart.subscribeClick which provides accurate param.time
@@ -1960,10 +2001,15 @@ useImperativeHandle(ref, () => ({
                     // Ignore
                 }
 
-                // Update replay to the clicked position
-                replaySeek(clickedIndex);
-                replayIndexRef.current = clickedIndex;
-                updateReplayData(clickedIndex, true); // true = hide future candles
+                // Update replay to the clicked position — Phase 7: delegate to controller.
+                const ctrl = replayControllerRef.current;
+                if (ctrl) {
+                    ctrl.seek(clickedIndex, true);
+                } else {
+                    replaySeek(clickedIndex);
+                    replayIndexRef.current = clickedIndex;
+                    updateReplayData(clickedIndex, true);
+                }
 
                 // Restore visible range after data update to prevent view jumping
                 if (currentVisibleRange && chartRef.current) {
@@ -2065,8 +2111,14 @@ useImperativeHandle(ref, () => ({
                         rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
                     }
 
-                    replaySeek(selectedIndex);
-                    replayIndexRef.current = selectedIndex;
+                    // Phase 7: delegate seek to ReplayController (handles engine rewind too).
+                    const ctrl = replayControllerRef.current;
+                    if (ctrl) {
+                        ctrl.seek(selectedIndex, true);
+                    } else {
+                        replaySeek(selectedIndex);
+                        replayIndexRef.current = selectedIndex;
+                    }
 
                     // Calculate target visible range BEFORE updating data
                     const selectedTime = fullDataRef.current[selectedIndex]?.time;
@@ -2109,7 +2161,9 @@ useImperativeHandle(ref, () => ({
                         }
                     }
 
-                    // Update replay data
+                    // Update chart series display (controller.seek already notified
+                    // onIndexChange, but we call again with preserveView=false to
+                    // let the range-restore logic below handle zoom).
                     updateReplayData(selectedIndex, true, false);
 
                     setIsSelectingReplayPoint(false);
@@ -2229,21 +2283,25 @@ useEffect(() => {
                     onPlayPause={handleReplayPlayPause}
                     onForward={handleReplayForward}
                     onJumpTo={handleReplayJumpTo}
-                    onSpeedChange={replaySetSpeed}
+                    onSpeedChange={(s) => {
+                        const ctrl = replayControllerRef.current;
+                        ctrl ? ctrl.setSpeed(s) : replaySetSpeed(s);
+                    }}
                     onClose={() => {
-                        replayStop();
+                        // Phase 7: delegate full exit to controller (handles engine rewind).
+                        const ctrl = replayControllerRef.current;
+                        if (ctrl) {
+                            ctrl.exit();
+                        } else {
+                            replayStop();
+                            if (mainSeriesRef.current && fullDataRef.current.length > 0) {
+                                dataRef.current = fullDataRef.current;
+                                mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
+                                updateIndicators(fullDataRef.current, indicators);
+                            }
+                        }
                         setIsReplayMode(false);
-                        // Notify parent about replay mode change
-                        if (onReplayModeChange) {
-                            onReplayModeChange(false);
-                        }
-                        // Restore full data
-                        if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                            dataRef.current = fullDataRef.current;
-                            const transformedData = transformData(fullDataRef.current, chartTypeRef.current);
-                            mainSeriesRef.current.setData(transformedData);
-                            updateIndicators(fullDataRef.current, indicators);
-                        }
+                        if (onReplayModeChange) onReplayModeChange(false);
                     }}
                 />
             )}
