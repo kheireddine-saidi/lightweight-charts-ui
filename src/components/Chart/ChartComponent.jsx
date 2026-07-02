@@ -20,6 +20,8 @@ import { PineTSRuntime } from '../../indicators/PineTSRuntime';
 import { intervalToSeconds } from '../../utils/timeframes';
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
+import { IndicatorEngine } from '../../engine/indicators/IndicatorEngine';
+import { TradeVisualizationManager } from '../../engine/chart/TradeVisualizationManager';
 import '../../plugins/line-tools/line-tools.css';
 import ReplayControls from '../Replay/ReplayControls';
 import ReplaySlider from '../Replay/ReplaySlider';
@@ -116,6 +118,10 @@ const ChartComponent = forwardRef(({
     const chartRef = useRef(null);
     const mainSeriesRef = useRef(null);
     const indicatorRegistryRef = useRef(new IndicatorRegistry());
+    // IndicatorEngine facade — unifies built-in and Pine indicator execution paths (Phase 5.1)
+    const indicatorEngineRef = useRef(null);
+    // TradeVisualizationManager — pure projection of engine state to chart drawings (Phase 5.3)
+    const tradeVisualizationManagerRef = useRef(null);
     const chartReadyRef = useRef(false); // Track when chart is fully stable and ready for indicator additions
     const lineToolManagerRef = useRef(null);
     const priceScaleTimerRef = useRef(null); // Ref for the candle countdown timer
@@ -171,9 +177,37 @@ const ChartComponent = forwardRef(({
             onError: (err) => console.error('[ChartDataManager]', err),
         });
         chartDataManagerRef.current = mgr;
+
+        // ── TradeVisualizationManager (Phase 5.3) ─────────────────────────
+        // Bridges engine events → committed zone updates in ChartComponent state.
+        const tvm = new TradeVisualizationManager({
+            onZoneCreate: (positionId, zoneData) => {
+                setCommittedTradeZones(prev => {
+                    // Avoid duplicates (e.g., rapid fills)
+                    if (prev.some(z => z.positionId === positionId)) return prev;
+                    return [...prev, { id: `tvm_${positionId}`, ...zoneData }];
+                });
+            },
+            onZoneUpdate: (positionId, fields) => {
+                setCommittedTradeZones(prev =>
+                    prev.map(z =>
+                        z.positionId === positionId ? { ...z, ...fields } : z
+                    )
+                );
+            },
+            onZoneRemove: (positionId) => {
+                setCommittedTradeZones(prev =>
+                    prev.filter(z => z.positionId !== positionId)
+                );
+            },
+        });
+        tradeVisualizationManagerRef.current = tvm;
+
         return () => {
             mgr.destroy();
             chartDataManagerRef.current = null;
+            tvm.destroy();
+            tradeVisualizationManagerRef.current = null;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -1426,8 +1460,12 @@ useImperativeHandle(ref, () => ({
                 const transformed = transformData(newData, chartTypeRef.current);
                 mainSeriesRef.current?.setData(transformed);
 
-                // Re-run PineTS with expanded data
+                // Re-run PineTS with expanded data (also updates IndicatorEngine)
                 if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(newData);
+                // Ensure IndicatorEngine Pine wrappers also get the expanded history
+                if (indicatorEngineRef.current) {
+                    indicatorEngineRef.current.runPineWithData(newData);
+                }
 
                 // Remove dino marker if we managed to load data
                 if (dinoMarkerId) {
@@ -1533,6 +1571,14 @@ useImperativeHandle(ref, () => ({
         const replacementSeries = createSeries(chart, chartType, symbol);
         mainSeriesRef.current = replacementSeries;
         initializeLineTools(replacementSeries);
+
+        // Sync new series reference into managers (Phase 5)
+        if (tradeVisualizationManagerRef.current) {
+            tradeVisualizationManagerRef.current.setChart(chart, replacementSeries);
+        }
+        if (indicatorEngineRef.current) {
+            indicatorEngineRef.current.setChart(chart);
+        }
 
         // Re-attach trade markers primitive to the new series (preserving all markers)
         if (tradeMarkerListRef.current.length > 0) {
@@ -1816,7 +1862,12 @@ useImperativeHandle(ref, () => ({
 
     const updateRealtimeIndicators = useCallback((candle) => {
         if (!chartRef.current) return;
+        // Built-in O(1) path (existing)
         indicatorRegistryRef.current.updateIncremental(candle, chartRef.current);
+        // Unified facade — also handles Pine debounced re-run (Phase 5.2)
+        if (indicatorEngineRef.current) {
+            indicatorEngineRef.current.updateIncremental(candle);
+        }
     }, []);
 
     const updateIndicators = useCallback((data, indicatorsConfig) => {
@@ -1862,6 +1913,37 @@ useImperativeHandle(ref, () => ({
         } else {
             pineRuntimeRef.current.updateCandles(data);
         }
+
+        // ── Phase 5.1: initialise / update IndicatorEngine ────────────────
+        // Create the engine once (lazy), then keep it in sync with Pine indicators.
+        // The engine's Pine wrapper handles debounced re-runs on ticks.
+        const _engineEnabledInds = useIndicatorStore.getState().indicators.filter(i => i.enabled);
+        if (!indicatorEngineRef.current) {
+            indicatorEngineRef.current = new IndicatorEngine(
+                indicatorRegistryRef.current,
+                pineRuntimeRef.current,
+                chart,
+                {
+                    pineDebounceMs: 100,
+                    onPineResult: (id, result, _chart) => {
+                        // Mirror Pine result back into the existing pineSeriesRef logic
+                        // by calling the existing handler (handled below in the loop)
+                        // This callback is fired by PineIndicatorWrapper; we don't need
+                        // to duplicate series management here as the existing loop below
+                        // still runs on full data changes. On incremental ticks,
+                        // the wrapper updates data so the next runNow call reflects it.
+                    },
+                },
+            );
+        } else {
+            // Keep Pine runtime reference current (data may have changed)
+            indicatorEngineRef.current._pineRuntime = pineRuntimeRef.current;
+            indicatorEngineRef.current._chart = chart;
+        }
+        // Sync Pine indicator list into the engine so ticks trigger debounced runs
+        indicatorEngineRef.current._data = Array.isArray(data) ? data : [];
+        indicatorEngineRef.current.updatePine(_engineEnabledInds);
+        // ── end Phase 5.1 ─────────────────────────────────────────────────
 
         const enabledInds = useIndicatorStore.getState().indicators.filter(ind => ind.enabled);
         const currentIds  = new Set(enabledInds.map(i => i.id));

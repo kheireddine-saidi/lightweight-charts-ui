@@ -65,6 +65,18 @@ export const Events = Object.freeze({
   /** Session snapshot restored. payload: { snapshot } */
   SNAPSHOT_RESTORED: 'SNAPSHOT_RESTORED',
 
+  /**
+   * An indicator result was updated (built-in or Pine).
+   * payload: { id: string, result: object, chartId?: string }
+   */
+  INDICATOR_UPDATED: 'INDICATOR_UPDATED',
+
+  /**
+   * A position's fields changed (SL/TP edit accepted by engine).
+   * payload: { position } or { positionId, stopLoss, takeProfit }
+   */
+  POSITION_UPDATED: 'POSITION_UPDATED',
+
   /** User finished drawing a trade setup. payload: { setup } */
   TRADE_SETUP_DRAWN: 'TRADE_SETUP_DRAWN',
 
