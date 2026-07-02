@@ -5,7 +5,8 @@ import {
     createSeriesMarkers,
 } from 'lightweight-charts';
 // CandlestickSeries, BarSeries, AreaSeries, BaselineSeries imported inside SeriesManager
-import { createSeries, transformData, reattachTradeMarkers, reattachTimer } from '../../engine/chart/SeriesManager';
+import { createSeries, transformData, reattachTradeMarkers, reattachTimer, applySeriesColors } from '../../engine/chart/SeriesManager';
+import { useChartSettingsStore } from '../../stores/chartSettingsStore';
 import { IndicatorRenderer } from '../../engine/indicators/IndicatorRenderer';
 import { DrawingManager, TOOL_MAP as DM_TOOL_MAP } from '../../engine/chart/DrawingManager';
 import styles from './ChartComponent.module.css';
@@ -1298,7 +1299,8 @@ useImperativeHandle(ref, () => ({
 
         const chart = chartRef.current;
 
-        const replacementSeries = createSeries(chart, chartType, symbol);
+        const { bullColor, bearColor } = useChartSettingsStore.getState();
+        const replacementSeries = createSeries(chart, chartType, symbol, { bullColor, bearColor });
         mainSeriesRef.current = replacementSeries;
         initializeLineTools(replacementSeries);
 
@@ -1451,6 +1453,38 @@ useImperativeHandle(ref, () => ({
     //   - pineSeriesRef (per-indicator LWC series)
     //   - IndicatorEngine sync for tick-time debounced re-runs
     const userIndicators = useIndicatorStore(s => s.indicators);
+
+    // ── Chart display settings (from ChartSettingsModal) ──────────────────
+    const chartShowGrid      = useChartSettingsStore(s => s.showGrid);
+    const chartBgColor       = useChartSettingsStore(s => s.backgroundColor);
+    const chartBullColor     = useChartSettingsStore(s => s.bullColor);
+    const chartBearColor     = useChartSettingsStore(s => s.bearColor);
+    // Apply chart settings to chart + series whenever the store changes.
+    // This is the live bridge from ChartSettingsModal → LWC chart options.
+    useEffect(() => {
+        if (!chartRef.current) return;
+
+        const gridColor = theme === 'dark' ? '#2A2E39' : '#e0e3eb';
+        const defaultBg = theme === 'dark' ? '#131722' : '#ffffff';
+
+        chartRef.current.applyOptions({
+            layout: {
+                background: { color: chartBgColor ?? defaultBg },
+            },
+            grid: {
+                vertLines: { color: gridColor, visible: chartShowGrid },
+                horzLines: { color: gridColor, visible: chartShowGrid },
+            },
+        });
+
+        if (mainSeriesRef.current) {
+            applySeriesColors(mainSeriesRef.current, chartTypeRef.current, {
+                bullColor: chartBullColor,
+                bearColor: chartBearColor,
+            });
+        }
+    }, [chartShowGrid, chartBgColor, chartBullColor, chartBearColor, theme]);
+
     const runPineIndicatorsRef = useRef(null);
 
     const runPineIndicators = useCallback(async (data) => {
