@@ -1,26 +1,26 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
 import {
     createChart,
-    CandlestickSeries,
-    BarSeries,
     LineSeries,
-    AreaSeries,
-    BaselineSeries,
     createSeriesMarkers,
 } from 'lightweight-charts';
+// CandlestickSeries, BarSeries, AreaSeries, BaselineSeries imported inside SeriesManager
+import { createSeries, transformData, reattachTradeMarkers, reattachTimer } from '../../engine/chart/SeriesManager';
+import { IndicatorRenderer } from '../../engine/indicators/IndicatorRenderer';
+import { DrawingManager, TOOL_MAP as DM_TOOL_MAP } from '../../engine/chart/DrawingManager';
 import styles from './ChartComponent.module.css';
 import { binanceLiveFeed as binanceLiveFeedSingleton } from '../../feeds/BinanceLiveFeed';
 import { EventBus, Events } from '../../core/EventBus';
-import { calculateHeikinAshi } from '../../utils/chartUtils';
+// calculateHeikinAshi moved to SeriesManager (Phase 5)
 import { snapToOHLC } from '../../utils/magnetSnap';
 import { IndicatorRegistry, INDICATOR_CONSTRUCTORS } from '../../indicators/registry';
 import { executionEngine } from '../../engine/trading/ExecutionEngine';
 import { useIndicatorStore } from '../../stores/indicatorStore';
-import { PineTSRuntime } from '../../indicators/PineTSRuntime';
+// PineTSRuntime moved to IndicatorRenderer (Phase 5)
 import { intervalToSeconds } from '../../utils/timeframes';
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
-import { IndicatorEngine } from '../../engine/indicators/IndicatorEngine';
+// IndicatorEngine moved to IndicatorRenderer (Phase 5)
 import { TradeVisualizationManager } from '../../engine/chart/TradeVisualizationManager';
 import '../../plugins/line-tools/line-tools.css';
 import ReplayControls from '../Replay/ReplayControls';
@@ -30,47 +30,8 @@ import { ReplayFeed } from '../../feeds/ReplayFeed';
 import { ChartDataManager } from '../../chart/ChartDataManager';
 import TradeSetupTool from './TradeSetupTool';
 
-const TOOL_MAP = {
-    'cursor': 'None',
-    'eraser': 'Eraser',
-    'trendline': 'TrendLine',
-    'arrow': 'Arrow',
-    'ray': 'Ray',
-    'extended_line': 'ExtendedLine',
-    'horizontal': 'HorizontalLine',
-    'horizontal_ray': 'HorizontalRay',
-    'vertical': 'VerticalLine',
-    'cross_line': 'CrossLine',
-    'parallel_channel': 'ParallelChannel',
-    'fibonacci': 'FibRetracement',
-    'fib_extension': 'FibExtension',
-    'pitchfork': 'Pitchfork',
-    'brush': 'Brush',
-    'highlighter': 'Highlighter',
-    'rectangle': 'Rectangle',
-    'circle': 'Circle',
-    'path': 'Path',
-    'text': 'Text',
-    'callout': 'Callout',
-    'price_label': 'PriceLabel',
-    'pattern': 'Pattern',
-    'triangle': 'Triangle',
-    'abcd': 'ABCD',
-    'xabcd': 'XABCD',
-    'elliott_impulse': 'ElliottImpulseWave',
-    'elliott_correction': 'ElliottCorrectionWave',
-    'head_and_shoulders': 'HeadAndShoulders',
-    'prediction': 'LongPosition',
-    'prediction_short': 'ShortPosition',
-    'date_range': 'DateRange',
-    'price_range': 'PriceRange',
-    'date_price_range': 'DatePriceRange',
-    'measure': 'Measure',
-    'trade_setup': 'None', // handled by TradeSetupTool overlay, not LineToolManager
-    'zoom_in': 'None', // Zoom handled separately via click handler
-    'zoom_out': 'None', // Zoom handled separately via click handler
-    'remove': 'None'
-};
+// TOOL_MAP moved to DrawingManager.js (Phase 6)
+const TOOL_MAP = DM_TOOL_MAP;
 
 const ChartComponent = forwardRef(({
     feed,          // ← new: must implement IDataFeed
@@ -120,12 +81,16 @@ const ChartComponent = forwardRef(({
     const indicatorRegistryRef = useRef(new IndicatorRegistry());
     // IndicatorEngine facade — unifies built-in and Pine indicator execution paths (Phase 5.1)
     const indicatorEngineRef = useRef(null);
+    // IndicatorRenderer — owns PineTS runtime + pineSeriesRef management (Phase 5)
+    const indicatorRendererRef = useRef(null);
+    // DrawingManager — owns LineToolManager + PriceScaleTimer + zoom (Phase 6)
+    const drawingManagerRef = useRef(null);
     // TradeVisualizationManager — pure projection of engine state to chart drawings (Phase 5.3)
     const tradeVisualizationManagerRef = useRef(null);
     const chartReadyRef = useRef(false); // Track when chart is fully stable and ready for indicator additions
     const lineToolManagerRef = useRef(null);
     const priceScaleTimerRef = useRef(null); // Ref for the candle countdown timer
-    const wsRef = useRef(null);
+    // wsRef removed — ChartDataManager owns the WebSocket subscription (Phase 4)
     const chartTypeRef = useRef(chartType);
     const dataRef = useRef([]);
     const comparisonSeriesRefs = useRef(new Map());
@@ -164,26 +129,17 @@ const ChartComponent = forwardRef(({
     // Per-chart ReplayFeed — owns binary-search advanceTo logic for REPLAY_TICK events
     const replayFeedRef = useRef(null);
 
-    // ChartDataManager — encapsulates data loading and feed subscription for this chart.
-    // Instantiated once per chart mount; used alongside existing inline load logic.
-    // TODO (Phase 3.5): replace inline loadData useEffect with manager.load() calls.
+    // ── ChartDataManager (Phase 4) ─────────────────────────────────────────
+    // Owns history loading + live WebSocket subscription for this chart.
+    // Callbacks bridge pure data events → chart rendering + engine side-effects.
+    // Created once on mount; symbol/interval effect below calls manager.load().
     const chartDataManagerRef = useRef(null);
-    useEffect(() => {
-        const mgr = new ChartDataManager({
-            chartId: `chart-component-${symbol}-${interval}`,
-            feed: activeFeed,
-            onCandle: (_candle, _allData) => { /* managed inline for now */ },
-            onHistoryLoaded: (_data) => { /* managed inline for now */ },
-            onError: (err) => console.error('[ChartDataManager]', err),
-        });
-        chartDataManagerRef.current = mgr;
 
-        // ── TradeVisualizationManager (Phase 5.3) ─────────────────────────
-        // Bridges engine events → committed zone updates in ChartComponent state.
+    useEffect(() => {
+        // ── TradeVisualizationManager ──────────────────────────────────────
         const tvm = new TradeVisualizationManager({
             onZoneCreate: (positionId, zoneData) => {
                 setCommittedTradeZones(prev => {
-                    // Avoid duplicates (e.g., rapid fills)
                     if (prev.some(z => z.positionId === positionId)) return prev;
                     return [...prev, { id: `tvm_${positionId}`, ...zoneData }];
                 });
@@ -203,14 +159,129 @@ const ChartComponent = forwardRef(({
         });
         tradeVisualizationManagerRef.current = tvm;
 
+        const mgr = new ChartDataManager({
+            chartId: `chart-${symbol}-${interval}`,
+            feed: activeFeed,
+
+            // Called after history fetch AND after prependHistory (pagination).
+            // mgr._isInitialLoad is true only for the first load per symbol/interval.
+            onHistoryLoaded: (data) => {
+                if (!mainSeriesRef.current) return;
+                const isInitial = mgr._isInitialLoad !== false;
+                dataRef.current = data;
+
+                const activeType = chartTypeRef.current;
+                const transformedData = transformData(data, activeType);
+                mainSeriesRef.current.setData(transformedData);
+                timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
+                chartReadyRef.current = true;
+
+                if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(data);
+                if (indicatorRendererRef.current) indicatorRendererRef.current.runWithData(data);
+
+                if (isInitial) {
+                    // Timer setup — only needed once per symbol/interval
+                    const ivSec = intervalToSeconds(interval);
+                    if (Number.isFinite(ivSec) && ivSec > 0) {
+                        if (!priceScaleTimerRef.current) {
+                            initializePriceScaleTimer(mainSeriesRef.current, ivSec);
+                        } else {
+                            priceScaleTimerRef.current.applyOptions({ timeframeSeconds: ivSec });
+                        }
+                    }
+
+                    requestAnimationFrame(() => {
+                        if (chartDataManagerRef.current) updateIndicators(data, indicators);
+                    });
+
+                    const preserved = mgr._preservedCandleWindow ?? DEFAULT_CANDLE_WINDOW;
+                    applyDefaultCandlePosition(transformedData.length, preserved);
+
+                    setTimeout(() => {
+                        if (chartDataManagerRef.current) {
+                            isActuallyLoadingRef.current = false;
+                            setIsLoading(false);
+                            updateAxisLabel();
+                        }
+                    }, 50);
+
+                    mgr._isInitialLoad = false; // subsequent calls = pagination
+                }
+            },
+
+            // Called on every live tick. isClosed=true when Binance marks the candle as final.
+            onCandle: (candle, allData, isClosed) => {
+                if (isReplayModeRef.current) return;
+                dataRef.current = allData;
+
+                EventBus.emit(Events.PRICE_TICK, { price: candle.close, time: candle.time });
+                executionEngine.processTick(symbol, candle.close, candle.time);
+
+                if (isClosed) {
+                    EventBus.emit(Events.CANDLE, { candle, index: allData.length - 1, symbol });
+                }
+
+                if (!mainSeriesRef.current) return;
+                const currentChartType = chartTypeRef.current;
+                const transformedAll   = transformData(allData, currentChartType);
+                const latest           = transformedAll[transformedAll.length - 1];
+
+                const isValid = latest && (
+                    latest.value !== undefined
+                        ? Number.isFinite(latest.value)
+                        : ['open', 'high', 'low', 'close'].every(k => Number.isFinite(latest[k]))
+                );
+
+                if (isValid) {
+                    mainSeriesRef.current.update(latest);
+                    updateRealtimeIndicators(candle);
+                    updateAxisLabel();
+                    updateOhlcFromLatest();
+                    if (priceScaleTimerRef.current) {
+                        priceScaleTimerRef.current.updateCandleData(candle.open, candle.close);
+                    }
+                }
+            },
+
+            onError: (err) => {
+                console.error('[ChartDataManager]', err);
+                isActuallyLoadingRef.current = false;
+                setIsLoading(false);
+            },
+        });
+
+        chartDataManagerRef.current = mgr;
+
+        // ── IndicatorRenderer (Phase 5) ───────────────────────────────────
+        const renderer = new IndicatorRenderer({ indicatorRegistry: indicatorRegistryRef.current });
+        indicatorRendererRef.current = renderer;
+
+        // ── DrawingManager (Phase 6) ──────────────────────────────────────
+        const dm = new DrawingManager({
+            symbol:               symbol,
+            getActiveTool:        () => activeToolRef.current,
+            getMagnetMode:        () => magnetModeRef.current,
+            getMagnetLastLogical: () => magnetLastLogicalRef.current,
+            getFullData:          () => fullDataRef.current,
+            onToolUsed:           onToolUsed ?? null,
+            onAlertsSync:         onAlertsSync ?? null,
+            onAlertTriggered:     onAlertTriggered ?? null,
+        });
+        drawingManagerRef.current = dm;
+
         return () => {
             mgr.destroy();
             chartDataManagerRef.current = null;
             tvm.destroy();
             tradeVisualizationManagerRef.current = null;
+            renderer.destroy();
+            indicatorRendererRef.current = null;
+            dm.destroy();
+            drawingManagerRef.current = null;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
 
     // Derived refs kept in sync with hook state (needed in callbacks/closures)
     const replayIndexRef = useRef(null);
@@ -732,205 +803,49 @@ useImperativeHandle(ref, () => ({
     getIsReplayMode: () => isReplayModeRef.current,
 }));
 
-    // Helper function for zooming the chart
-    const zoomChart = useCallback((zoomIn = true) => {
-        if (!chartRef.current) return;
+    // zoomChart moved to DrawingManager.zoomChart() (Phase 6)
+    // ── Drawing sync effects — delegate to DrawingManager (Phase 6) ──────────
 
-        try {
-            const timeScale = chartRef.current.timeScale();
-            const visibleRange = timeScale.getVisibleLogicalRange();
-
-            if (!visibleRange) return;
-
-            const { from, to } = visibleRange;
-            const rangeSize = to - from;
-            const center = (from + to) / 2;
-
-            // Zoom in shrinks the visible range by 20%, zoom out expands by 25%
-            const zoomFactor = zoomIn ? 0.8 : 1.25;
-            const newRangeSize = rangeSize * zoomFactor;
-
-            const newFrom = center - newRangeSize / 2;
-            const newTo = center + newRangeSize / 2;
-
-            timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
-
-        } catch (err) {
-            console.warn('Failed to zoom chart', err);
-        }
-    }, []);
-
-    // Handle active tool change
     useEffect(() => {
-        if (lineToolManagerRef.current && activeTool) {
-            // Handle special action tools that don't use startTool
-            const manager = lineToolManagerRef.current;
-
-            // Trade setup tool — handled entirely by TradeSetupTool overlay
-            if (activeTool === 'trade_setup') {
-                // Ensure LineToolManager is in passthrough mode (no active tool)
-                if (typeof manager.startTool === 'function') manager.startTool('None');
-                return;
-            }
-
-            // Lock All Drawings - SET state based on App's state
-            if (activeTool === 'lock_all') {
-                // Don't toggle here - the App.jsx already toggled its state
-                // We just need to ensure LineToolManager is in sync
-                // The useEffect below handles the sync
-                // Reset to cursor after action
-                if (onToolUsed) onToolUsed();
-                return;
-            }
-
-            // Hide All Drawings - SET state based on App's state
-            if (activeTool === 'hide_drawings') {
-                // Don't toggle here - the App.jsx already toggled its state
-                // We just need to ensure LineToolManager is in sync
-                // The useEffect below handles the sync
-                // Reset to cursor after action
-                if (onToolUsed) onToolUsed();
-                return;
-            }
-
-            // Clear All Drawings - remove all drawings
-            if (activeTool === 'clear_all') {
-                if (typeof manager.clearTools === 'function') {
-                    manager.clearTools();
-
-                }
-                // Reset to cursor after action
-                if (onToolUsed) onToolUsed();
-                return;
-            }
-
-            // Show Timer - toggle timer visibility (handled by useEffect below)
-            if (activeTool === 'show_timer') {
-                // Timer visibility is synced via the isTimerVisible prop
-                // Reset to cursor after action
-                if (onToolUsed) onToolUsed();
-                return;
-            }
-
-
-            const mappedTool = TOOL_MAP[activeTool] || 'None';
-
-
-            if (lineToolManagerRef.current && typeof lineToolManagerRef.current.startTool === 'function') {
-                lineToolManagerRef.current.startTool(mappedTool);
-
-            }
-        }
+        drawingManagerRef.current?.syncActiveTool(activeTool, onToolUsed);
+        lineToolManagerRef.current = drawingManagerRef.current?.lineToolManager ?? null;
     }, [activeTool, onToolUsed]);
 
-    // Sync drawings lock state from props to LineToolManager
     useEffect(() => {
-        if (!lineToolManagerRef.current) return;
-        const manager = lineToolManagerRef.current;
-
-        // Get current state from LineToolManager
-        const currentlyLocked = typeof manager.areDrawingsLocked === 'function'
-            ? manager.areDrawingsLocked()
-            : false;
-
-        // Only update if state differs
-        if (isDrawingsLocked !== currentlyLocked) {
-            if (isDrawingsLocked) {
-                if (typeof manager.lockAllDrawings === 'function') {
-                    manager.lockAllDrawings();
-
-                }
-            } else {
-                if (typeof manager.unlockAllDrawings === 'function') {
-                    manager.unlockAllDrawings();
-
-                }
-            }
-        }
+        drawingManagerRef.current?.syncDrawingsLocked(isDrawingsLocked);
     }, [isDrawingsLocked]);
 
-    // Sync drawings visibility state from props to LineToolManager
     useEffect(() => {
-        if (!lineToolManagerRef.current) return;
-        const manager = lineToolManagerRef.current;
-
-        // Get current state from LineToolManager
-        const currentlyHidden = typeof manager.areDrawingsHidden === 'function'
-            ? manager.areDrawingsHidden()
-            : false;
-
-        // Only update if state differs
-        if (isDrawingsHidden !== currentlyHidden) {
-            if (isDrawingsHidden) {
-                if (typeof manager.hideAllDrawings === 'function') {
-                    manager.hideAllDrawings();
-
-                }
-            } else {
-                if (typeof manager.showAllDrawings === 'function') {
-                    manager.showAllDrawings();
-
-                }
-            }
-        }
+        drawingManagerRef.current?.syncDrawingsHidden(isDrawingsHidden);
     }, [isDrawingsHidden]);
 
-    // Sync timer visibility state from props to PriceScaleTimer
-    // Sync timer visibility state from props to PriceScaleTimer
     useEffect(() => {
-        if (!priceScaleTimerRef.current) return;
-        const timer = priceScaleTimerRef.current;
-
-        if (typeof timer.setVisible === 'function') {
-            timer.setVisible(isTimerVisible);
-
-            // Toggle native price label: hide when our timer is shown, show when hidden
-            // This ensures they are mutually exclusive
-            if (mainSeriesRef.current) {
-                mainSeriesRef.current.applyOptions({
-                    lastValueVisible: !isTimerVisible // Show native label only when timer is HIDDEN
-                });
-            }
-        }
+        drawingManagerRef.current?.syncTimerVisible(isTimerVisible, mainSeriesRef.current);
+        priceScaleTimerRef.current = drawingManagerRef.current?.priceScaleTimer ?? null;
     }, [isTimerVisible]);
 
-    // Handle zoom clicks on chart (both zoom-in and zoom-out)
+    // Zoom-tool DOM listener stays in ChartComponent (needs container ref + cleanup)
     useEffect(() => {
-        const isZoomIn = activeTool === 'zoom_in';
+        const isZoomIn  = activeTool === 'zoom_in';
         const isZoomOut = activeTool === 'zoom_out';
-
         if ((!isZoomIn && !isZoomOut) || !chartContainerRef.current) return;
-
         const handleZoomClick = (e) => {
-            // Only handle left clicks
             if (e.button !== 0) return;
-            zoomChart(isZoomIn);
+            drawingManagerRef.current?.zoomChart(chartRef.current, isZoomIn);
         };
-
-        // Handle ESC key to exit zoom mode
         const handleKeyDown = (e) => {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                if (onToolUsed) onToolUsed();
-
-            }
+            if (e.key === 'Escape') { e.preventDefault(); onToolUsed?.(); }
         };
-
         const container = chartContainerRef.current;
         container.addEventListener('click', handleZoomClick);
         window.addEventListener('keydown', handleKeyDown);
-
-        // Change cursor based on zoom direction
         container.style.cursor = isZoomIn ? 'zoom-in' : 'zoom-out';
-
         return () => {
             container.removeEventListener('click', handleZoomClick);
             window.removeEventListener('keydown', handleKeyDown);
             container.style.cursor = '';
         };
-    }, [activeTool, zoomChart, onToolUsed]);
-
-
+    }, [activeTool, onToolUsed]);
 
     // Track chart visibility to avoid unnecessary RAF work
     useEffect(() => {
@@ -1085,97 +1000,8 @@ useImperativeHandle(ref, () => ({
 
 
 
-    // Helper to transform OHLC data based on chart type
-    const transformData = (data, type) => {
-        if (!data || data.length === 0) return [];
-
-        switch (type) {
-            case 'line':
-            case 'area':
-            case 'baseline':
-                return data.map(d => ({ time: d.time, value: d.close }));
-            case 'heikin-ashi':
-                return calculateHeikinAshi(data);
-            default:
-                return data;
-        }
-    };
-
-    // Create appropriate series based on chart type
-    const createSeries = (chart, type, title = '') => {
-        const commonOptions = { lastValueVisible: true, priceScaleId: 'right', title: title };
-
-        switch (type) {
-            case 'candlestick':
-                return chart.addSeries(CandlestickSeries, {
-                    ...commonOptions,
-                    upColor: '#089981',
-                    downColor: '#F23645',
-                    borderVisible: false,
-                    wickUpColor: '#089981',
-                    wickDownColor: '#F23645',
-                });
-            case 'bar':
-                return chart.addSeries(BarSeries, {
-                    ...commonOptions,
-                    upColor: '#089981',
-                    downColor: '#F23645',
-                    thinBars: false,
-                });
-            case 'hollow-candlestick':
-                return chart.addSeries(CandlestickSeries, {
-                    ...commonOptions,
-                    upColor: 'transparent',
-                    downColor: '#F23645',
-                    borderUpColor: '#089981',
-                    borderDownColor: '#F23645',
-                    wickUpColor: '#089981',
-                    wickDownColor: '#F23645',
-                });
-            case 'line':
-                return chart.addSeries(LineSeries, {
-                    ...commonOptions,
-                    color: '#2962FF',
-                    lineWidth: 2,
-                });
-            case 'area':
-                return chart.addSeries(AreaSeries, {
-                    ...commonOptions,
-                    topColor: 'rgba(41, 98, 255, 0.4)',
-                    bottomColor: 'rgba(41, 98, 255, 0.0)',
-                    lineColor: '#2962FF',
-                    lineWidth: 2,
-                });
-            case 'baseline':
-                return chart.addSeries(BaselineSeries, {
-                    ...commonOptions,
-                    topLineColor: '#089981',
-                    topFillColor1: 'rgba(8, 153, 129, 0.28)',
-                    topFillColor2: 'rgba(8, 153, 129, 0.05)',
-                    bottomLineColor: '#F23645',
-                    bottomFillColor1: 'rgba(242, 54, 69, 0.05)',
-                    bottomFillColor2: 'rgba(242, 54, 69, 0.28)',
-                });
-            case 'heikin-ashi':
-                return chart.addSeries(CandlestickSeries, {
-                    ...commonOptions,
-                    upColor: '#089981',
-                    downColor: '#F23645',
-                    borderVisible: false,
-                    wickUpColor: '#089981',
-                    wickDownColor: '#F23645',
-                });
-            default:
-                return chart.addSeries(CandlestickSeries, {
-                    ...commonOptions,
-                    upColor: '#089981',
-                    downColor: '#F23645',
-                    borderVisible: false,
-                    wickUpColor: '#089981',
-                    wickDownColor: '#F23645',
-                });
-        }
-    };
+    // transformData and createSeries are imported from SeriesManager (Phase 5).
+    // They are kept as local aliases so all existing call sites are unchanged.
 
     // Keep track of active tool for the wrapper
     const activeToolRef = useRef(activeTool);
@@ -1183,127 +1009,17 @@ useImperativeHandle(ref, () => ({
         activeToolRef.current = activeTool;
     }, [activeTool]);
 
-    // Initialize LineToolManager when series is ready
+    // initializeLineTools delegates to DrawingManager (Phase 6)
     const initializeLineTools = (series) => {
-        if (!lineToolManagerRef.current) {
-            const manager = new LineToolManager();
-
-            // ── Magnet-aware coordinateToPrice wrapper ─────────────────────
-            // The bundled LineToolManager plugin (third-party, pre-minified)
-            // reads price purely via `this.series.coordinateToPrice(y)` for
-            // every point placement and drag operation. It has no public hook
-            // for custom coordinate transforms, and LightweightCharts itself
-            // does NOT expose magnet-snapped coordinates through any public
-            // API — the snapping (`Magnet._internal_align`) is a private
-            // internal used only to draw the crosshair line. So drawing tools
-            // built on the public API (ours included) never see snapped values
-            // unless we replicate the snap ourselves and inject it here.
-            //
-            // We wrap the series' coordinateToPrice so every caller — including
-            // every call inside the bundled plugin — transparently receives the
-            // OHLC-snapped price when magnetMode is active.
-            if (!series.__originalCoordinateToPrice) {
-                series.__originalCoordinateToPrice = series.coordinateToPrice.bind(series);
-                series.coordinateToPrice = (y) => {
-                    const rawPrice = series.__originalCoordinateToPrice(y);
-                    if (rawPrice == null || !magnetModeRef.current) return rawPrice;
-                    const data = fullDataRef.current;
-                    // coordinateToPrice(y) has no X parameter, so we rely on
-                    // magnetLastLogicalRef — kept continuously up to date by the
-                    // chart's subscribeCrosshairMove handler (see chart-init effect).
-                    const idx = magnetLastLogicalRef.current;
-                    if (!data?.length || idx == null) return rawPrice;
-                    return snapToOHLC(rawPrice, idx, data, true);
-                };
-            }
-
-            // Wrap startTool to detect when tool is cancelled/finished
-            const originalStartTool = manager.startTool.bind(manager);
-            manager.startTool = (tool) => {
-
-                originalStartTool(tool);
-
-                // If tool is None, it means we are back to cursor mode
-                // But don't trigger onToolUsed for zoom tools since they handle their own state
-                const isZoomTool = activeToolRef.current === 'zoom_in' || activeToolRef.current === 'zoom_out';
-                if ((tool === 'None' || tool === null) && activeToolRef.current !== null && activeToolRef.current !== 'cursor' && !isZoomTool) {
-
-                    if (onToolUsed) onToolUsed();
-                }
-            };
-
-            series.attachPrimitive(manager);
-            lineToolManagerRef.current = manager;
-
-
-            // Ensure alerts primitive (if present) knows the current symbol
-            try {
-                const userAlerts = manager._userPriceAlerts;
-                if (userAlerts && typeof userAlerts.setSymbolName === 'function') {
-                    userAlerts.setSymbolName(symbol);
-                }
-
-                // Bridge internal alert list out to React so the Alerts tab
-                // can show alerts created from the chart-side UI.
-                if (userAlerts && typeof userAlerts.alertsChanged === 'function' && typeof userAlerts.alerts === 'function' && typeof onAlertsSync === 'function') {
-                    userAlerts.alertsChanged().subscribe(() => {
-                        try {
-                            const rawAlerts = userAlerts.alerts() || [];
-                            const mapped = rawAlerts.map(a => ({
-                                id: a.id,
-                                price: a.price,
-                                condition: a.condition || 'crossing',
-                                type: a.type || 'price',
-                            }));
-                            onAlertsSync(mapped);
-                        } catch (err) {
-                            console.warn('Failed to sync chart alerts to app', err);
-                        }
-                    }, manager);
-                }
-
-                // Also bridge trigger events so the app can mark alerts as Triggered
-                // and write log entries when the internal primitive fires.
-                if (userAlerts && typeof userAlerts.alertTriggered === 'function' && typeof onAlertTriggered === 'function') {
-                    userAlerts.alertTriggered().subscribe((evt) => {
-                        try {
-                            onAlertTriggered({
-                                externalId: evt.alertId,
-                                price: evt.alertPrice,
-                                timestamp: evt.timestamp,
-                                direction: evt.direction,
-                                condition: evt.condition,
-                            });
-                        } catch (err) {
-                            console.warn('Failed to propagate alertTriggered event to app', err);
-                        }
-                    }, manager);
-                }
-            } catch (err) {
-                console.warn('Failed to initialize alert symbol name', err);
-            }
-
-            if (import.meta.env.DEV) {
-            window.lineToolManager = manager;
-            window.chartInstance = chartRef.current;
-            window.seriesInstance = series;
-            }
-        }
+        drawingManagerRef.current?.initializeLineTools(series, chartRef.current);
+        lineToolManagerRef.current = drawingManagerRef.current?.lineToolManager ?? null;
     };
 
-    // Initialize PriceScaleTimer when series is ready
+    // initializePriceScaleTimer delegates to DrawingManager (Phase 6)
     const initializePriceScaleTimer = (series, intervalSeconds) => {
-        if (!priceScaleTimerRef.current) {
-            const timer = new PriceScaleTimer({
-                timeframeSeconds: intervalSeconds,
-                visible: isTimerVisible,
-                textColor: '#FFFFFF',
-                yOffset: 19,
-                textPadding: 0.95
-            });
-            series.attachPrimitive(timer);
-            priceScaleTimerRef.current = timer;
-        }
+        const visible = isTimerVisibleRef?.current ?? false;
+        drawingManagerRef.current?.initializePriceScaleTimer(series, intervalSeconds, visible);
+        priceScaleTimerRef.current = drawingManagerRef.current?.priceScaleTimer ?? null;
     };
 
     // Initialize chart once on mount
@@ -1453,18 +1169,18 @@ useImperativeHandle(ref, () => ({
                 const fresh = olderCandles.filter(c => !existingTimes.has(c.time));
                 if (!fresh.length) { noMoreHistory = true; return; }
 
-                const newData = [...fresh, ...dataRef.current];
-                dataRef.current = newData;
-                timeIndexMapRef.current = new Map(newData.map((d, i) => [d.time, i]));
-
-                const transformed = transformData(newData, chartTypeRef.current);
-                mainSeriesRef.current?.setData(transformed);
-
-                // Re-run PineTS with expanded data (also updates IndicatorEngine)
-                if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(newData);
-                // Ensure IndicatorEngine Pine wrappers also get the expanded history
-                if (indicatorEngineRef.current) {
-                    indicatorEngineRef.current.runPineWithData(newData);
+                // Delegate prepend to ChartDataManager — it updates its internal
+                // data array, deduplicates, and fires onHistoryLoaded which updates
+                // dataRef, series, timeIndexMap, and re-runs indicators.
+                if (chartDataManagerRef.current) {
+                    chartDataManagerRef.current.prependHistory(fresh);
+                } else {
+                    // Fallback (manager not yet ready)
+                    const newData = [...fresh, ...dataRef.current];
+                    dataRef.current = newData;
+                    timeIndexMapRef.current = new Map(newData.map((d, i) => [d.time, i]));
+                    mainSeriesRef.current?.setData(transformData(newData, chartTypeRef.current));
+                    if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(newData);
                 }
 
                 // Remove dino marker if we managed to load data
@@ -1542,11 +1258,7 @@ useImperativeHandle(ref, () => ({
             } catch (error) {
                 console.warn('Failed to disconnect resize observer', error);
             }
-            try {
-                if (wsRef.current) { wsRef.current(); wsRef.current = null; }
-            } catch (error) {
-                console.warn('Failed to close chart WebSocket', error);
-            }
+            // WebSocket is now managed by ChartDataManager (destroyed in its own effect cleanup)
             tradeLinesRef.current.forEach(({ series, chart }) => { try { chart.removeSeries(series); } catch {} });
             tradeLinesRef.current.clear();
             try {
@@ -1576,34 +1288,13 @@ useImperativeHandle(ref, () => ({
         if (tradeVisualizationManagerRef.current) {
             tradeVisualizationManagerRef.current.setChart(chart, replacementSeries);
         }
-        if (indicatorEngineRef.current) {
-            indicatorEngineRef.current.setChart(chart);
+        if (indicatorRendererRef.current) {
+            indicatorRendererRef.current.setChart(chart);
         }
 
-        // Re-attach trade markers primitive to the new series (preserving all markers)
-        if (tradeMarkerListRef.current.length > 0) {
-            try {
-                const sorted = [...tradeMarkerListRef.current].sort((a, b) => a.time - b.time);
-                tradeMarkersPrimitiveRef.current = createSeriesMarkers(
-                    replacementSeries,
-                    sorted.map(m => ({ time: m.time, position: m.position, shape: m.shape, color: m.color, text: m.text, size: 1 }))
-                );
-            } catch (e) {
-                console.warn('Failed to re-attach trade markers:', e);
-                tradeMarkersPrimitiveRef.current = null;
-            }
-        } else {
-            tradeMarkersPrimitiveRef.current = null; // will be lazily recreated on next addMarker
-        }
-
-        // Re-attach timer to the new series when chart type changes
-        if (priceScaleTimerRef.current) {
-            try {
-                replacementSeries.attachPrimitive(priceScaleTimerRef.current);
-            } catch (e) {
-                console.warn('Error re-attaching timer to new series:', e);
-            }
-        }
+        // Re-attach trade markers and timer via SeriesManager helpers (Phase 5)
+        tradeMarkersPrimitiveRef.current = reattachTradeMarkers(replacementSeries, tradeMarkerListRef.current);
+        reattachTimer(replacementSeries, priceScaleTimerRef.current);
 
         const existingData = transformData(dataRef.current, chartType);
         if (existingData.length) {
@@ -1639,22 +1330,9 @@ useImperativeHandle(ref, () => ({
         }
 
         return () => {
-            if (lineToolManagerRef.current) {
-
-                try {
-                    lineToolManagerRef.current.clearTools();
-                } catch (err) {
-                    console.warn('Failed to clear tools before switching chart type', err);
-                }
-                try {
-                    if (mainSeriesRef.current) {
-                        mainSeriesRef.current.detachPrimitive(lineToolManagerRef.current);
-                    }
-                } catch (err) {
-                    console.warn('Failed to detach line tools from series', err);
-                }
-                lineToolManagerRef.current = null;
-            }
+            // Detach + clear via DrawingManager (Phase 6)
+            drawingManagerRef.current?.detachFromSeries(mainSeriesRef.current);
+            lineToolManagerRef.current = null;
 
 
 
@@ -1673,200 +1351,51 @@ useImperativeHandle(ref, () => ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [chartType, symbol]);
 
-    // Load data when symbol/interval changes
+    // ── Data loading effect (Phase 4) ─────────────────────────────────────
+    // When symbol or interval changes: capture zoom, start loading spinner,
+    // then delegate to ChartDataManager.load(). The manager fires onHistoryLoaded
+    // and onCandle callbacks (defined in the mount effect above) so all rendering,
+    // engine ticks, and indicator updates happen there — not here.
     useEffect(() => {
         if (!chartRef.current) return;
 
-        // Capture current zoom level (visible bar count) before fetching new data
-        // This prevents the chart from resetting to the default narrow zoom on every interval change
+        // Capture current zoom level so we can restore it after the new data arrives
         let preservedCandleWindow = DEFAULT_CANDLE_WINDOW;
         try {
-            const timeScale = chartRef.current.timeScale();
-            const range = timeScale.getVisibleLogicalRange();
+            const range = chartRef.current.timeScale().getVisibleLogicalRange();
             if (range) {
                 const count = range.to - range.from;
-                // Only preserve if it's a reasonable number (e.g., > 5 candles)
-                if (count > 5 && Number.isFinite(count)) {
-                    preservedCandleWindow = count;
-                }
+                if (count > 5 && Number.isFinite(count)) preservedCandleWindow = count;
             }
-        } catch (e) {
-            console.warn('Failed to capture current zoom level', e);
-        }
+        } catch (_) { /* ignore */ }
 
-        let cancelled = false;
-        let indicatorFrame = null;
-        const abortController = new AbortController();
+        isActuallyLoadingRef.current = true;
+        chartReadyRef.current = false;
+        setIsLoading(true);
 
-        if (wsRef.current) { wsRef.current(); wsRef.current = null; }
+        const mgr = chartDataManagerRef.current;
+        if (!mgr) return;
 
-        const loadData = async () => {
-            isActuallyLoadingRef.current = true;
-            chartReadyRef.current = false; // Reset chart ready state when loading new data
-            setIsLoading(true);
+        // Store zoom so the onHistoryLoaded callback can retrieve it
+        mgr._preservedCandleWindow = preservedCandleWindow;
+        // Signal that the next onHistoryLoaded call is the initial load (not pagination)
+        mgr._isInitialLoad = true;
+        // Keep the manager's feed reference current (may have changed e.g. live→replay)
+        mgr.setFeed(activeFeedRef.current);
+        mgr.load(symbol, interval, 1000);
 
-            try {
-                const data = await activeFeed.loadHistory(symbol, interval, 1000, abortController.signal);
-                if (cancelled) return;
-
-                if (Array.isArray(data) && data.length > 0 && mainSeriesRef.current) {
-                    dataRef.current = data;
-                    const activeType = chartTypeRef.current;
-                    const transformedData = transformData(data, activeType);
-                    mainSeriesRef.current.setData(transformedData);
-                    timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
-
-                    // Mark chart as ready immediately after data is set
-                    chartReadyRef.current = true;
-
-                    // Trigger PineTS re-run with fresh data
-                    if (runPineIndicatorsRef.current) {
-                        runPineIndicatorsRef.current(data);
-                    }
-
-                    // Initialize the candle countdown timer
-                    const intervalSeconds = intervalToSeconds(interval);
-                    if (!priceScaleTimerRef.current && mainSeriesRef.current && Number.isFinite(intervalSeconds) && intervalSeconds > 0) {
-                        initializePriceScaleTimer(mainSeriesRef.current, intervalSeconds);
-                    } else if (priceScaleTimerRef.current && Number.isFinite(intervalSeconds) && intervalSeconds > 0) {
-                        // Update timer timeframe if interval changed
-                        priceScaleTimerRef.current.applyOptions({ timeframeSeconds: intervalSeconds });
-                    }
-
-                    if (indicatorFrame) cancelAnimationFrame(indicatorFrame);
-                    indicatorFrame = requestAnimationFrame(() => {
-                        if (!cancelled) {
-                            updateIndicators(data, indicators);
-                        }
-                    });
-
-                    applyDefaultCandlePosition(transformedData.length, preservedCandleWindow);
-
-                    setTimeout(() => {
-                        if (!cancelled) {
-                            isActuallyLoadingRef.current = false;
-                            setIsLoading(false);
-                            updateAxisLabel();
-                        }
-                    }, 50);
-
-                    wsRef.current = activeFeed.subscribe(symbol, interval, (ticker) => {
-                        if (cancelled || !ticker) return;
-
-                        const parsedCandle = {
-                            time: Number(ticker.time),
-                            open: Number(ticker.open),
-                            high: Number(ticker.high),
-                            low: Number(ticker.low),
-                            close: Number(ticker.close),
-                        };
-
-                        const intervalSeconds = intervalToSeconds(interval);
-                        if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
-                            return;
-                        }
-
-                        if (!['open', 'high', 'low', 'close'].every(key => Number.isFinite(parsedCandle[key]))) {
-                            console.warn('Received invalid candle data:', parsedCandle);
-                            return;
-                        }
-
-                        const candleTime = Math.floor(parsedCandle.time / intervalSeconds) * intervalSeconds;
-                        const normalizedCandle = { ...parsedCandle, time: candleTime };
-
-                        const currentData = dataRef.current.length ? [...dataRef.current] : [];
-                        const lastIndex = currentData.length - 1;
-                        if (lastIndex >= 0 && currentData[lastIndex].time === candleTime) {
-                            currentData[lastIndex] = normalizedCandle;
-                        } else {
-                            currentData.push(normalizedCandle);
-                        }
-
-                        dataRef.current = currentData;
-
-                        // Emit PRICE_TICK on EVERY tick (including in-progress candles)
-                        // so PnL display and marketStore update in real time.
-                        EventBus.emit(Events.PRICE_TICK, { price: normalizedCandle.close, time: normalizedCandle.time });
-
-                        // Feed every tick to the execution engine for real-time
-                        // limit order fills and SL/TP checks. This runs on ALL ticks
-                        // (not just closed candles) so fills are immediate and correct.
-                        // Pass normalizedCandle.time (candle open time in seconds) as fillTime
-                        // so zones can snap to the fill candle position via timeToCoordinate.
-                        executionEngine.processTick(symbol, normalizedCandle.close, normalizedCandle.time);
-
-                        // Only emit closed candles to EventBus CANDLE for replay/indicator logic.
-                        if (ticker.isClosed) {
-                            EventBus.emit(Events.CANDLE, { candle: normalizedCandle, index: currentData.length - 1, symbol });
-                        }
-
-                        const currentChartType = chartTypeRef.current;
-                        const transformedRealtimeData = transformData(currentData, currentChartType);
-                        const latestUpdate = transformedRealtimeData[transformedRealtimeData.length - 1];
-
-                        let isValidUpdate = false;
-                        if (latestUpdate) {
-                            if (latestUpdate.value !== undefined) {
-                                isValidUpdate = Number.isFinite(latestUpdate.value);
-                            } else if (latestUpdate.open !== undefined) {
-                                isValidUpdate = ['open', 'high', 'low', 'close'].every(key => Number.isFinite(latestUpdate[key]));
-                            }
-                        }
-
-                        if (isValidUpdate && mainSeriesRef.current && !isReplayModeRef.current) {
-                            // Use series.update() — never setData() — for realtime updates (Task 10)
-                            const lastTransformed = transformedRealtimeData[transformedRealtimeData.length - 1];
-                            if (lastTransformed) {
-                              mainSeriesRef.current.update(lastTransformed);
-                            }
-                            updateRealtimeIndicators(currentData[currentData.length - 1]);
-                            updateAxisLabel();
-                            updateOhlcFromLatest();
-
-                            // Update timer color immediately with latest candle data
-                            if (priceScaleTimerRef.current) {
-                                priceScaleTimerRef.current.updateCandleData(normalizedCandle.open, normalizedCandle.close);
-                            }
-                        }
-                    });
-                } else {
-                    dataRef.current = [];
-                    mainSeriesRef.current?.setData([]);
-                    isActuallyLoadingRef.current = false;
-                    setIsLoading(false);
-                }
-            } catch (error) {
-                if (error.name === 'AbortError') {
-                    return;
-                }
-                console.error('Error loading chart data:', error);
-                if (!cancelled) {
-                    isActuallyLoadingRef.current = false;
-                    setIsLoading(false);
-                }
-            }
-        };
-
-        loadData();
-
-        return () => {
-            cancelled = true;
-            if (indicatorFrame) {
-                cancelAnimationFrame(indicatorFrame);
-            }
-            abortController.abort();
-            if (wsRef.current) { wsRef.current(); wsRef.current = null; }
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // No cleanup needed here — mgr.load() internally aborts the previous fetch
+        // and closes the previous WebSocket before starting the new one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [symbol, interval]);
 
     const updateRealtimeIndicators = useCallback((candle) => {
         if (!chartRef.current) return;
-        // Built-in O(1) path (existing)
+        // Built-in O(1) path via IndicatorRegistry
         indicatorRegistryRef.current.updateIncremental(candle, chartRef.current);
-        // Unified facade — also handles Pine debounced re-run (Phase 5.2)
-        if (indicatorEngineRef.current) {
-            indicatorEngineRef.current.updateIncremental(candle);
+        // Pine debounced path via IndicatorRenderer (Phase 5)
+        if (indicatorRendererRef.current) {
+            indicatorRendererRef.current.updateIncremental(candle);
         }
     }, []);
 
@@ -1898,95 +1427,22 @@ useImperativeHandle(ref, () => ({
         }
     }, [indicators, updateIndicators]);
 
-    // ── PineTS user indicator effect ──────────────────────────────────────
+    // ── PineTS / IndicatorRenderer (Phase 5) ─────────────────────────────────
+    // runPineIndicators delegates to IndicatorRenderer which owns:
+    //   - PineTSRuntime lifecycle
+    //   - pineSeriesRef (per-indicator LWC series)
+    //   - IndicatorEngine sync for tick-time debounced re-runs
     const userIndicators = useIndicatorStore(s => s.indicators);
-    const pineSeriesRef = useRef({});
-    const pineRuntimeRef = useRef(null);
     const runPineIndicatorsRef = useRef(null);
 
     const runPineIndicators = useCallback(async (data) => {
-        const chart = chartRef.current;
-        if (!chart || !data?.length) return;
-
-        if (!pineRuntimeRef.current) {
-            pineRuntimeRef.current = new PineTSRuntime(data);
-        } else {
-            pineRuntimeRef.current.updateCandles(data);
-        }
-
-        // ── Phase 5.1: initialise / update IndicatorEngine ────────────────
-        // Create the engine once (lazy), then keep it in sync with Pine indicators.
-        // The engine's Pine wrapper handles debounced re-runs on ticks.
-        const _engineEnabledInds = useIndicatorStore.getState().indicators.filter(i => i.enabled);
-        if (!indicatorEngineRef.current) {
-            indicatorEngineRef.current = new IndicatorEngine(
-                indicatorRegistryRef.current,
-                pineRuntimeRef.current,
-                chart,
-                {
-                    pineDebounceMs: 100,
-                    onPineResult: (id, result, _chart) => {
-                        // Mirror Pine result back into the existing pineSeriesRef logic
-                        // by calling the existing handler (handled below in the loop)
-                        // This callback is fired by PineIndicatorWrapper; we don't need
-                        // to duplicate series management here as the existing loop below
-                        // still runs on full data changes. On incremental ticks,
-                        // the wrapper updates data so the next runNow call reflects it.
-                    },
-                },
-            );
-        } else {
-            // Keep Pine runtime reference current (data may have changed)
-            indicatorEngineRef.current._pineRuntime = pineRuntimeRef.current;
-            indicatorEngineRef.current._chart = chart;
-        }
-        // Sync Pine indicator list into the engine so ticks trigger debounced runs
-        indicatorEngineRef.current._data = Array.isArray(data) ? data : [];
-        indicatorEngineRef.current.updatePine(_engineEnabledInds);
-        // ── end Phase 5.1 ─────────────────────────────────────────────────
-
-        const enabledInds = useIndicatorStore.getState().indicators.filter(ind => ind.enabled);
-        const currentIds  = new Set(enabledInds.map(i => i.id));
-
-        for (const [id, seriesList] of Object.entries(pineSeriesRef.current)) {
-            if (!currentIds.has(id)) {
-                for (const s of seriesList) { try { chart.removeSeries(s); } catch {} }
-                delete pineSeriesRef.current[id];
-            }
-        }
-
-        for (const ind of enabledInds) {
-            const result = await pineRuntimeRef.current.run(ind.source, ind.params);
-            if (!chartRef.current) return;
-            if (result.error) { console.warn(`[PineTS] ${ind.title}:`, result.error); continue; }
-
-            // Sync title back from ctx.indicator.title if it differs from stored title
-            if (result.title && result.title !== ind.title) {
-                useIndicatorStore.getState().upsert({ ...ind, title: result.title });
-            }
-
-            const oldSeries = pineSeriesRef.current[ind.id] ?? [];
-            for (const s of oldSeries) { try { chartRef.current.removeSeries(s); } catch {} }
-
-            const newSeries = [];
-            for (const seriesOut of result.series) {
-                if (!seriesOut.data.length) continue;
-                try {
-                    // LWC v5 API: addSeries(SeriesClass, options) — NOT addSeries({type:...})
-                    const ls = chartRef.current.addSeries(LineSeries, {
-                        lineWidth: seriesOut.lineWidth ?? 1,
-                        color: seriesOut.color,
-                        title: seriesOut.name,
-                        priceScaleId: 'right',
-                        lastValueVisible: true,
-                        priceLineVisible: false,
-                    });
-                    ls.setData(seriesOut.data);
-                    newSeries.push(ls);
-                } catch (e) { console.warn('[PineTS] series add error:', e); }
-            }
-            pineSeriesRef.current[ind.id] = newSeries;
-        }
+        const renderer = indicatorRendererRef.current;
+        if (!renderer) return;
+        // Keep the renderer's chart reference current
+        if (chartRef.current) renderer.setChart(chartRef.current);
+        // Keep IndicatorEngine ref in sync for external callers (e.g. onHistoryLoaded)
+        if (renderer._engine) indicatorEngineRef.current = renderer._engine;
+        await renderer.run(data);
     }, []);
 
     useEffect(() => { runPineIndicatorsRef.current = runPineIndicators; }, [runPineIndicators]);

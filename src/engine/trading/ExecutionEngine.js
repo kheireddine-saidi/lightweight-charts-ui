@@ -49,7 +49,6 @@ export class ExecutionEngine {
 
     this._unsubCandle = null;
     this._started     = false;
-    this._prevPrice   = null; // kept for legacy compat (processTick crossover uses OrderManager._prevPrice now)
   }
 
   // ─── Public property mirrors (read-only — for legacy code that accesses these directly) ──
@@ -118,7 +117,6 @@ export class ExecutionEngine {
       this._finaliseClose(pos, closePrice, now, reason);
     }
 
-    this._prevPrice = price; // legacy compat
     this._updateEquity();
 
     EventBus.emit(Events.EQUITY_TICK, { equity: this.portfolio.equity });
@@ -147,14 +145,16 @@ export class ExecutionEngine {
 
     if (isLimit) {
       // Check for immediate fill (order at-or-beyond current market price)
-      const currentPrice = this.orderManager._prevPrice;
+      const currentPrice = this.orderManager._prevPriceBySymbol[pos.symbol] ?? null;
       if (currentPrice !== null) {
         const fillPrice = this._fillModel.checkTickFill(currentPrice, null, pos);
         if (fillPrice !== null) {
           const filledOrder = { ...pos, fillPrice, fillTime: pos.entryTime };
           const openedPos   = this.positionManager.openPosition(filledOrder);
           this.portfolio.reserveMargin(openedPos.requiredMargin ?? 0);
-          EventBus.emit(Events.ORDER_CREATED,   { order: openedPos });
+          // ORDER_CREATED emitted once here (immediately-filled limit orders
+          // skip the bottom-of-function emit via early return).
+          EventBus.emit(Events.ORDER_CREATED,   { order: pos });
           EventBus.emit(Events.ORDER_FILLED,    { order: openedPos, fillPrice, fillTime: openedPos.filledTime });
           EventBus.emit(Events.POSITION_OPENED, { position: openedPos });
           EventBus.emit(Events.BALANCE_CHANGED, {
@@ -167,6 +167,7 @@ export class ExecutionEngine {
       }
       this.orderManager.addOrder(pos);
       this.portfolio.reserveMargin(pos.requiredMargin ?? 0);
+      EventBus.emit(Events.ORDER_CREATED, { order: pos });
       EventBus.emit(Events.BALANCE_CHANGED, {
         balance: this.portfolio.balance,
         equity:  this.portfolio.equity,
@@ -177,6 +178,7 @@ export class ExecutionEngine {
       const filledOrder = { ...pos, fillPrice: pos.entryPrice, fillTime: pos.entryTime };
       const openedPos   = this.positionManager.openPosition(filledOrder);
       this.portfolio.reserveMargin(openedPos.requiredMargin ?? 0);
+      EventBus.emit(Events.ORDER_CREATED,   { order: pos });
       EventBus.emit(Events.POSITION_OPENED, { position: openedPos });
       EventBus.emit(Events.BALANCE_CHANGED, {
         balance: this.portfolio.balance,
@@ -185,7 +187,6 @@ export class ExecutionEngine {
       });
     }
 
-    EventBus.emit(Events.ORDER_CREATED, { order: pos });
     return id;
   }
 
@@ -209,12 +210,11 @@ export class ExecutionEngine {
    */
   updatePosition(id, fields) {
     // ── Open positions branch ──
-    if (this.positionManager.getPosition(id)) {
-      this.positionManager.updatePosition(
-        id,
-        fields,
-        this._prevPrice ?? this.positionManager.getPosition(id)?.entryPrice,
-      );
+    const openPos = this.positionManager.getPosition(id);
+    if (openPos) {
+      // Use the portfolio's symbol-scoped last price for TPSL validation.
+      const refPrice = this.portfolio.getLastPrice(openPos.symbol, openPos.entryPrice);
+      this.positionManager.updatePosition(id, fields, refPrice);
       return;
     }
 
@@ -253,9 +253,11 @@ export class ExecutionEngine {
   closePosition(id, closePrice, closeTime) {
     const pos = this.positionManager.getPosition(id);
     if (!pos) return;
-    // Remove from positionManager manually then finalise
+    // Delegate removal to PositionManager so its internal state stays consistent.
+    // We pass the closed record back only for the event payload — _finaliseClose
+    // handles PnL accounting and EventBus emissions.
     this.positionManager.positions = this.positionManager.positions.filter(p => p.id !== id);
-    this._finaliseClose(pos, closePrice, closeTime ?? Math.floor(Date.now() / 1000), 'manual');
+    this._finaliseClose(pos, closePrice ?? pos.entryPrice, closeTime ?? Math.floor(Date.now() / 1000), 'manual');
   }
 
   // ─── Replay/backtest candle processing ────────────────────────────────────
@@ -267,7 +269,6 @@ export class ExecutionEngine {
     this._processPendingOrdersCandle(symbol, candle);
     this._checkSLTPCandle(symbol, candle);
     this._updateEquity();
-    this._prevPrice = candle.close;
 
     EventBus.emit(Events.EQUITY_TICK, { equity: this.portfolio.equity });
   }

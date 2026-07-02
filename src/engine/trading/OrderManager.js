@@ -26,7 +26,12 @@ export class OrderManager {
     this._validateTPSL = validateTPSL;
     /** @type {Array<object>} */
     this.orders       = [];
-    this._prevPrice   = null; // last known price per symbol for crossover detection
+    /**
+     * Last known price per symbol for crossover detection.
+     * Keyed by symbol string so multi-symbol order books are correct.
+     * @type {Record<string, number>}
+     */
+    this._prevPriceBySymbol = {};
   }
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
@@ -99,7 +104,7 @@ export class OrderManager {
    * @returns {Array<object>}  orders that filled (each has fillPrice, fillTime added)
    */
   matchTick(symbol, price, time) {
-    const prevPrice = this._prevPrice;
+    const prevPrice = this._prevPriceBySymbol[symbol] ?? null;
     const filled    = [];
     const remaining = [];
 
@@ -114,8 +119,8 @@ export class OrderManager {
       }
     }
 
-    this.orders     = remaining;
-    this._prevPrice = price;
+    this.orders                      = remaining;
+    this._prevPriceBySymbol[symbol]  = price;
     return filled;
   }
 
@@ -140,8 +145,8 @@ export class OrderManager {
       }
     }
 
-    this.orders     = remaining;
-    this._prevPrice = candle.close;
+    this.orders                      = remaining;
+    this._prevPriceBySymbol[symbol]  = candle.close;
     return filled;
   }
 

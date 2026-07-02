@@ -22,6 +22,7 @@
  */
 export function calculateRiskBasedPositionSize({ balance, riskPercent, entryPrice, stopLossPrice, leverage }) {
   if (!entryPrice || !stopLossPrice || !leverage || balance <= 0) return null;
+  if (!riskPercent || riskPercent <= 0) return null;
   const slDistance = Math.abs(entryPrice - stopLossPrice);
   if (slDistance === 0) return null;
 

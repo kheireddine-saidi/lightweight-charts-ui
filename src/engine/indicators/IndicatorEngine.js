@@ -300,8 +300,8 @@ export class IndicatorEngine {
         wrapper.setData(this._data);
         wrapper.runNow().catch(() => {});
       } else {
-        // New indicator
-        if (!this._pineRuntime) return;
+        // New indicator — skip (but continue the loop) if runtime is not yet available
+        if (!this._pineRuntime) continue;
         const wrapper = new PineIndicatorWrapper(
           ind,
           this._pineRuntime,

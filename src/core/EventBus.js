@@ -103,7 +103,19 @@ class EventBusClass {
     if (!this._listeners.has(event)) {
       this._listeners.set(event, new Set());
     }
-    this._listeners.get(event).add(handler);
+    const set = this._listeners.get(event);
+
+    // Dev-mode guard: warn when a single event accumulates many listeners —
+    // a common symptom of missing useEffect cleanup returning EventBus.off().
+    // import.meta.env.DEV is stripped to false by Vite in production builds.
+    if (import.meta.env.DEV && set.size >= 10) {
+      console.warn(
+        `[EventBus] "${event}" now has ${set.size + 1} listeners. ` +
+        'Possible missing EventBus.off() in a useEffect cleanup.',
+      );
+    }
+
+    set.add(handler);
     return () => this.off(event, handler);
   }
 
