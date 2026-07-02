@@ -107,6 +107,7 @@ const InputRow = styled.div`
 const Inp = styled.input`
   flex: 1; background: transparent; border: none; outline: none;
   color: ${C.text}; font-size: 13px; font-variant-numeric: tabular-nums;
+  width: 100%; min-width: 0; /* 👈 Fix: Ensures input dynamically shrinks */
   &::placeholder { color: ${C.dim}; }
   -moz-appearance: textfield;
   &::-webkit-outer-spin-button, &::-webkit-inner-spin-button { -webkit-appearance: none; }
@@ -148,7 +149,9 @@ const CostRow = styled.div`
 `;
 
 const TPSLGrid = styled.div`
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  display: grid; 
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); /* 👈 Fix: Prevents grid blow-out */
+  gap: 8px;
 `;
 
 const FieldWrap = styled.div`
@@ -261,9 +264,6 @@ const TradingPanel = ({ currentTime }) => {
     setQuoteSize(val > 0 ? val.toFixed(2) : '');
   };
   const handleSizeChange = (v) => {
-    // Clearing the field back to empty returns to auto-size mode.
-    // Assumption: empty field → user wants auto-sizing restored.
-    // (Flagged as assumption — caller may want to reconsider this default.)
     if (v === '') {
       setSizeOverridden(false);
     } else {
@@ -281,11 +281,6 @@ const TradingPanel = ({ currentTime }) => {
   const rewardAmt     = tpNum ? Math.abs(tpNum - entryPrice)  * positionSize * leverage : null;
 
   // ── TP/SL validation ──────────────────────────────────────────────────
-  // The order's side (long/short) isn't known until Buy/Long or Sell/Short
-  // is clicked, so real validation happens inside handleOrder (below) once
-  // side is known. tpWarning/slWarning surface the result as a bubble.
-  // Market orders open immediately at currentPrice → validate against currentPrice.
-  // Limit orders sit pending until filled → validate against entry/limit price.
   const refPriceForValidation = orderType === 'market' ? currentPrice : (entryPrice || currentPrice);
   const validationStatus = orderType === 'market' ? 'open' : 'pending';
   const riskPct       = riskAmt && freeMargin > 0 ? (riskAmt / freeMargin) * 100 : null;
@@ -293,10 +288,6 @@ const TradingPanel = ({ currentTime }) => {
   const riskLevel     = riskPct == null ? 'low' : riskPct > 5 ? 'high' : riskPct > 2 ? 'med' : 'low';
 
   // ── Auto-sizing effect ─────────────────────────────────────────────────
-  // Recomputes quoteSize so the risk at SL equals exactly riskPerTradePercent
-  // of balance. Only active while the user hasn't manually overridden the size.
-  // Call setQuoteSize/setSlider directly here (not handleSizeChange/setFromSlider)
-  // to avoid flipping sizeOverridden back to true.
   useEffect(() => {
     if (sizeOverridden) return;
     if (!slNum || !entryPrice) return;
@@ -337,26 +328,20 @@ const TradingPanel = ({ currentTime }) => {
     if (requiredMargin > freeMargin + 0.001) return;
 
     // ── Validate TP/SL before placing ──────────────────────────────────
-    // Now that `side` is known (long/short), check whether the entered TP/SL
-    // would trigger an immediate market exit/entry. If so, reject the order
-    // placement entirely and show a warning bubble instead of silently
-    // ignoring just the bad field — placing an order with a structurally
-    // wrong TP/SL is worse than not placing it at all.
     const refPrice = orderType === 'market' ? currentPrice : (entryPrice || currentPrice);
     const status = orderType === 'market' ? 'open' : 'pending';
     const result = validateTPSL(side, status, refPrice, tpNum, slNum);
     if (!result.valid) {
       if (result.field === 'tp') setTpWarning(result.message);
       else if (result.field === 'sl') setSlWarning(result.message);
-      // Auto-clear the warning after a few seconds, matching EditablePrice's bubble.
       setTimeout(() => { setTpWarning(null); setSlWarning(null); }, 3500);
-      return; // ignore the requested order placement
+      return; 
     }
     setTpWarning(null); setSlWarning(null);
 
     const positionId = openPosition({
       side,
-      symbol,   // ADD: was missing — every order was silently tagged 'BTCUSDT' without this
+      symbol,   
       type:          orderType,
       entryPrice:    currentPrice,
       limitPrice:    orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : undefined,
@@ -376,14 +361,13 @@ const TradingPanel = ({ currentTime }) => {
       });
     }
 
-    // Reset form
     setStopLoss(''); setTakeProfit('');
     setFromSetup(false); setPendingZoneId(null);
     if (orderType === 'limit') setLimitPrice('');
     setQuoteSize(''); setSlider(0);
-    setSizeOverridden(false); // each new order starts back in auto-size mode
+    setSizeOverridden(false); 
   }, [orderType, quoteSizeNum, positionSize, limitPrice, leverage, requiredMargin, freeMargin,
-      slNum, tpNum, currentTime, currentPrice, entryPrice, openPosition, pendingZoneId]);
+      slNum, tpNum, currentTime, currentPrice, entryPrice, openPosition, pendingZoneId, sizeOverridden, symbol]);
 
   const cantPlace = !quoteSizeNum || requiredMargin > freeMargin + 0.001
     || (orderType === 'limit' && !limitPrice);
