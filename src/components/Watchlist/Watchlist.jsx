@@ -73,7 +73,7 @@ const Watchlist = ({ currentSymbol, items, onSymbolSelect, onAddClick, onRemoveC
         // Optional: set drag image or style
     }, []);
 
-    const handleDragOver = useCallback((e, index) => {
+    const handleDragOver = useCallback((e, _index) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
     }, []);

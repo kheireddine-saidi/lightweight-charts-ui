@@ -67,12 +67,17 @@ const SourceEditor: React.FC<SourceEditorProps> = ({ indicator, onClose }) => {
   const [title, setTitle] = useState(indicator.title);
   const [source, setSource] = useState(indicator.source);
   const [dirty, setDirty] = useState(false);
-  const [lines, setLines] = useState(1);
+  const [_lines, setLines] = useState(1);
   const [col, setCol] = useState(1);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
+    // Intentional: reset editor state when a different indicator is selected.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTitle(indicator.title);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSource(indicator.source);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDirty(false);
   }, [indicator.id]);
 

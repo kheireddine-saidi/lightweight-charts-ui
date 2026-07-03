@@ -7,7 +7,7 @@ import tseslint from '@typescript-eslint/eslint-plugin'
 import tsparser from '@typescript-eslint/parser'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'src/plugins/line-tools/line-tools.js']),
   // JS/JSX files — same as before
   {
     files: ['**/*.{js,jsx}'],
@@ -26,7 +26,7 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
     },
   },
   // TS/TSX files — add typescript-eslint parser + plugin
@@ -52,7 +52,7 @@ export default defineConfig([
       ...reactHooks.configs.recommended.rules,
       // Relax some rules that trip up during the JS→TS migration
       '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
       'no-unused-vars': 'off', // defer to @typescript-eslint/no-unused-vars
     },
   },

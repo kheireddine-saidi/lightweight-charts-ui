@@ -129,7 +129,7 @@ export function useChartReplayBinding({
                 try {
                     const timeScale = chartRef.current.timeScale();
                     currentVisibleRange = timeScale.getVisibleRange();
-                } catch (e) {
+                } catch {
                     // Ignore
                 }
 
@@ -160,7 +160,7 @@ export function useChartReplayBinding({
                                 // Keep the current view
                                 timeScale.setVisibleRange(currentVisibleRange);
                             }
-                        } catch (e) {
+                        } catch {
                             // Ignore
                         }
                     }, 0);
@@ -228,12 +228,10 @@ export function useChartReplayBinding({
 
                     // Get current visible range BEFORE updating data to preserve zoom level
                     let currentVisibleRange = null;
-                    let currentVisibleLogicalRange = null;
                     try {
                         const timeScale = chartRef.current.timeScale();
                         currentVisibleRange = timeScale.getVisibleRange();
-                        currentVisibleLogicalRange = timeScale.getVisibleLogicalRange();
-                    } catch (e) {
+                    } catch {
                         // Ignore
                     }
 
@@ -316,7 +314,7 @@ export function useChartReplayBinding({
                                 if (chartRef.current) {
                                     try {
                                         chartRef.current.timeScale().setVisibleRange(targetRange);
-                                    } catch (e) {
+                                    } catch {
                                         // Ignore
                                     }
                                 }
@@ -327,7 +325,7 @@ export function useChartReplayBinding({
                                 if (chartRef.current) {
                                     try {
                                         chartRef.current.timeScale().setVisibleRange(targetRange);
-                                    } catch (e) {
+                                    } catch {
                                         // Ignore
                                     }
                                 }

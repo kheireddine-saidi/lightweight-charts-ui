@@ -70,7 +70,7 @@ export class TradeVisualizationManager {
    */
   destroy() {
     for (const unsub of this._unsubs) {
-      try { unsub(); } catch {}
+      try { unsub(); } catch { /* ignore */ }
     }
     this._unsubs = [];
     this._drawings.clear();

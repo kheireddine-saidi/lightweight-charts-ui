@@ -35,11 +35,6 @@ const isValidIntervalValue = (value) => {
   return VALID_INTERVAL_UNITS.has(match[2]);
 };
 
-const safeParseJSON = (value, fallback) => {
-  if (!value) return fallback;
-  try { return JSON.parse(value); } catch { return fallback; }
-};
-
 const sanitizeFavoriteIntervals = (raw) => {
   if (!Array.isArray(raw)) return [];
   return Array.from(new Set(raw.filter(isValidIntervalValue)));
@@ -115,9 +110,9 @@ export const useWorkspaceStore = create((set, get) => {
       get().updateChart(activeChartId, { interval });
       if (!favoriteIntervals.includes(interval)) {
         set({ lastNonFavoriteInterval: interval });
-        try { WorkspaceRepository.saveLastNonFavInterval(interval); } catch (_) {}
+        try { WorkspaceRepository.saveLastNonFavInterval(interval); } catch { /* ignore */ }
       }
-      try { WorkspaceRepository.saveInterval(interval); } catch (_) {}
+      try { WorkspaceRepository.saveInterval(interval); } catch { /* ignore */ }
     },
 
     toggleActiveChartIndicator: (name) => {
@@ -200,7 +195,7 @@ export const useWorkspaceStore = create((set, get) => {
       try {
         const next = get().favoriteIntervals;
         WorkspaceRepository.saveFavouriteIntervals(next);
-      } catch (_) {}
+      } catch { /* ignore */ }
     },
 
     addCustomInterval: (value, unit) => {
@@ -214,7 +209,7 @@ export const useWorkspaceStore = create((set, get) => {
       if (customIntervals.some((i) => i.value === newValue)) return { error: 'Interval already available!' };
       const next = [...customIntervals, { value: newValue, label: newValue, isCustom: true }];
       set({ customIntervals: next });
-      try { WorkspaceRepository.saveCustomIntervals(next); } catch (_) {}
+      try { WorkspaceRepository.saveCustomIntervals(next); } catch { /* ignore */ }
       return { ok: true };
     },
 
@@ -226,7 +221,7 @@ export const useWorkspaceStore = create((set, get) => {
       try {
         const { customIntervals } = get();
         WorkspaceRepository.saveCustomIntervals(customIntervals);
-      } catch (_) {}
+      } catch { /* ignore */ }
       // If the current interval was removed, fall back to 1d
       const { getActiveChart, setActiveChartInterval } = get();
       if (getActiveChart()?.interval === intervalValue) {

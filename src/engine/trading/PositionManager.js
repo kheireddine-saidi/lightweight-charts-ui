@@ -129,7 +129,7 @@ export class PositionManager {
    * @param {number} time
    * @returns {Array<{ pos:object, closePrice:number, reason:string }>}
    */
-  checkSLTPTick(symbol, price, time) {
+  checkSLTPTick(symbol, price, _time) {
     const toClose   = [];
     const remaining = [];
     for (const pos of this.positions) {

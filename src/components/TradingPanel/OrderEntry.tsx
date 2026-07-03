@@ -21,13 +21,15 @@ const SideSelector = styled.div`
     border-radius: 4px;
     cursor: pointer;
     font-weight: 600;
-    &.long {
-      background: ${props => props.active ? '#00b894' : '#2a2e39'};
-      color: ${props => props.active ? '#fff' : '#787b86'};
+    background: #2a2e39;
+    color: #787b86;
+    &.long.active {
+      background: #00b894;
+      color: #fff;
     }
-    &.short {
-      background: ${props => props.active ? '#ff6b6b' : '#2a2e39'};
-      color: ${props => props.active ? '#fff' : '#787b86'};
+    &.short.active {
+      background: #ff6b6b;
+      color: #fff;
     }
   }
 `;
@@ -96,10 +98,10 @@ export const OrderEntry: React.FC = () => {
   return (
     <Form>
       <SideSelector>
-        <button className="long" active={side === 'long'} onClick={() => setSide('long')}>
+        <button className={`long${side === 'long' ? ' active' : ''}`} onClick={() => setSide('long')}>
           LONG
         </button>
-        <button className="short" active={side === 'short'} onClick={() => setSide('short')}>
+        <button className={`short${side === 'short' ? ' active' : ''}`} onClick={() => setSide('short')}>
           SHORT
         </button>
       </SideSelector>

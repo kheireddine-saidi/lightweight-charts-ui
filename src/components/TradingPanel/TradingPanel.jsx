@@ -282,8 +282,8 @@ const TradingPanel = ({ currentTime }) => {
   const rewardAmt     = tpNum ? Math.abs(tpNum - entryPrice)  * positionSize * leverage : null;
 
   // ── TP/SL validation ──────────────────────────────────────────────────
-  const refPriceForValidation = orderType === 'market' ? currentPrice : (entryPrice || currentPrice);
-  const validationStatus = orderType === 'market' ? 'open' : 'pending';
+  const _refPriceForValidation = orderType === 'market' ? currentPrice : (entryPrice || currentPrice);
+  const _validationStatus = orderType === 'market' ? 'open' : 'pending';
   const riskPct       = riskAmt && freeMargin > 0 ? (riskAmt / freeMargin) * 100 : null;
   const rrRatio       = riskAmt && rewardAmt ? rewardAmt / riskAmt : null;
   const riskLevel     = riskPct == null ? 'low' : riskPct > 5 ? 'high' : riskPct > 2 ? 'med' : 'low';

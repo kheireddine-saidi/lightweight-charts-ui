@@ -36,7 +36,7 @@ export const useTradeSetupStore = create<TradeSetupState>((set, get) => ({
     if (setup.requestTradingPanel) {
       EventBus.emit(Events.TRADE_SETUP_DRAWN, { setup: get() });
       // Don't store requestTradingPanel in state
-      const { requestTradingPanel, zoneLink, ...rest } = setup as any;
+      const { requestTradingPanel: _requestTradingPanel, zoneLink: _zoneLink1, ...rest } = setup as any;
       if (Object.keys(rest).length > 0) set((s) => ({ ...s, ...rest }));
       return;
     }
@@ -44,7 +44,7 @@ export const useTradeSetupStore = create<TradeSetupState>((set, get) => ({
     if (setup.zoneLink != null) {
       const { zoneId, positionId, status } = setup.zoneLink;
       EventBus.emit(Events.TRADE_ZONE_LINKED, { zoneId, positionId, status });
-      const { zoneLink, ...rest } = setup as any;
+      const { zoneLink: _zoneLink2, ...rest } = setup as any;
       if (Object.keys(rest).length > 0) set((s) => ({ ...s, ...rest }));
       return;
     }

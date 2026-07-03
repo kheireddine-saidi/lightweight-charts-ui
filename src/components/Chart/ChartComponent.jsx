@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState, forwardRef, useCallback } from 'rea
 import {
     createChart,
     LineSeries,
-    createSeriesMarkers,
 } from 'lightweight-charts';
 // CandlestickSeries, BarSeries, AreaSeries, BaselineSeries imported inside SeriesManager
 import { createSeries, transformData, reattachTradeMarkers, reattachTimer, applySeriesColors } from '../../engine/chart/SeriesManager';
@@ -13,7 +12,6 @@ import styles from './ChartComponent.module.css';
 import { binanceLiveFeed as binanceLiveFeedSingleton } from '../../feeds/BinanceLiveFeed';
 import { EventBus, Events } from '../../core/EventBus';
 // calculateHeikinAshi moved to SeriesManager (Phase 5)
-import { snapToOHLC } from '../../utils/magnetSnap';
 import { IndicatorRegistry, INDICATOR_CONSTRUCTORS } from '../../indicators/registry';
 import { executionEngine } from '../../engine/trading/ExecutionEngine';
 import { useIndicatorStore } from '../../stores/indicatorStore';
@@ -113,7 +111,7 @@ const ChartComponent = forwardRef(({
         isPlaying,
         index: replayIndex,
         speed: replaySpeed,
-        load: replayLoad,
+        load: _replayLoad,
         play: replayPlay,
         pause: replayPause,
         stop: replayStop,
@@ -296,6 +294,9 @@ const ChartComponent = forwardRef(({
     const updateReplayDataRef = useRef(null); // Ref to store updateReplayData function
     const transformDataRef = useRef(null);   // Ref to store transformData function
     const updateIndicatorsRef = useRef(null); // Ref to store updateIndicators function
+    // Ref wrapper for getOrCreateReplayController — declared here (before useChartImperativeHandle)
+    // to avoid the TDZ; .current is assigned right after the useCallback is defined below.
+    const getOrCreateReplayControllerRef = useRef(null);
 
     const DEFAULT_CANDLE_WINDOW = 230;
     const DEFAULT_RIGHT_OFFSET = 10;
@@ -330,7 +331,7 @@ const ChartComponent = forwardRef(({
     };
 
     // Axis Label State
-    const [axisLabel, setAxisLabel] = useState(null);
+    const [_axisLabel, setAxisLabel] = useState(null);
 
     const isChartVisibleRef = useRef(true);
 
@@ -344,6 +345,7 @@ const ChartComponent = forwardRef(({
     // Expose undo/redo and line tool manager to parent
     // Imperative handle methods extracted to src/hooks/useChartImperativeHandle.js
     useChartImperativeHandle(ref, {
+        // Original deps
         lineToolManagerRef,
         chartRef,
         dataRef,
@@ -357,6 +359,31 @@ const ChartComponent = forwardRef(({
         applyDefaultCandlePosition,
         setCommittedTradeZones,
         symbol,
+        // Wiring-gap deps — timer
+        priceScaleTimerRef,
+        // Wiring-gap deps — replay state
+        setIsReplayMode,
+        replayIndexRef,
+        replayFeedRef,
+        // getOrCreateReplayController is declared after this call site (TDZ risk if passed directly).
+        // Pass a ref wrapper instead; .current is assigned right after the useCallback below.
+        getOrCreateReplayControllerRef,
+        updateReplayDataRef,
+        replayControllerRef,
+        replayStop,
+        chartTypeRef,
+        // updateIndicators is declared after this call site (TDZ risk).
+        // All usages inside the hook use updateIndicatorsRef.current instead.
+        indicators,
+        setIsSelectingReplayPoint,
+        fadedSeriesRef,
+        onReplayModeChange,
+        // Wiring-gap deps — follower/sync
+        followerFullDataRef,
+        interval,
+        // Wiring-gap deps — transform refs
+        transformDataRef,
+        updateIndicatorsRef,
     });
 
     // zoomChart moved to DrawingManager.zoomChart() (Phase 6)
@@ -790,7 +817,7 @@ const ChartComponent = forwardRef(({
             // Abort any in-flight pagination fetch
             paginationAbortController.abort();
 
-            try { chart.unsubscribeCrosshairMove(handleCrosshairForMagnet); } catch {}
+            try { chart.unsubscribeCrosshairMove(handleCrosshairForMagnet); } catch { /* ignore */ }
 
             // Clean up global window references to prevent memory leaks
             if (import.meta.env.DEV) {
@@ -816,7 +843,7 @@ const ChartComponent = forwardRef(({
                 console.warn('Failed to disconnect resize observer', error);
             }
             // WebSocket is now managed by ChartDataManager (destroyed in its own effect cleanup)
-            tradeLinesRef.current.forEach(({ series, chart }) => { try { chart.removeSeries(series); } catch {} });
+            tradeLinesRef.current.forEach(({ series, chart }) => { try { chart.removeSeries(series); } catch { /* ignore */ } });
             tradeLinesRef.current.clear();
             try {
                 chart.remove();
@@ -1125,7 +1152,7 @@ const ChartComponent = forwardRef(({
             if (chartRef.current) {
                 try {
                     chartRef.current.unsubscribeCrosshairMove(handleCrosshairMove);
-                } catch (e) {
+                } catch {
                     // Ignore cleanup errors
                 }
             }
@@ -1149,7 +1176,7 @@ const ChartComponent = forwardRef(({
             if (!currentSymbols.has(sym)) {
                 try {
                     chartRef.current.removeSeries(series);
-                } catch (e) {
+                } catch {
                     // Ignore removal errors
                 }
                 activeSeries.delete(sym);
@@ -1271,6 +1298,7 @@ const ChartComponent = forwardRef(({
     }, [timeRange, isLoading]);
 
     // Replay Logic — playback is now driven by SimulationClock (RAF-based, not setInterval)
+    // eslint-disable-next-line no-unused-vars
     const stopReplay = () => {
         replayPause();
     };
@@ -1288,7 +1316,7 @@ const ChartComponent = forwardRef(({
             try {
                 const timeScale = chartRef.current.timeScale();
                 currentVisibleRange = timeScale.getVisibleLogicalRange();
-            } catch (e) {
+            } catch {
                 // Ignore errors
             }
         }
@@ -1329,7 +1357,7 @@ const ChartComponent = forwardRef(({
                     const timeScale = chartRef.current.timeScale();
                     timeScale.setVisibleLogicalRange(currentVisibleRange);
                 }, 0);
-            } catch (e) {
+            } catch {
                 // Ignore errors
             }
         }
@@ -1371,6 +1399,8 @@ const ChartComponent = forwardRef(({
         }
         return replayControllerRef.current;
     }, [symbol, indicators]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Keep the ref current so useChartImperativeHandle can call it without TDZ
+    getOrCreateReplayControllerRef.current = getOrCreateReplayController;
 
     // Store transformData and updateIndicators in refs for use in imperative methods
     useEffect(() => {
@@ -1408,7 +1438,7 @@ const ChartComponent = forwardRef(({
                 try {
                     const timeScale = chartRef.current.timeScale();
                     currentVisibleRange = timeScale.getVisibleRange();
-                } catch (e) {
+                } catch {
                     // Ignore errors
                 }
             }
@@ -1455,7 +1485,7 @@ const ChartComponent = forwardRef(({
                             // No current range or replay index - use fitContent to show all
                             try {
                                 timeScale.fitContent();
-                            } catch (e) {
+                            } catch {
                                 // Ignore
                             }
                         }

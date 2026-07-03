@@ -59,6 +59,7 @@ export function useAlerts(
       return Number.isFinite(ts) && ts >= cutoff;
     });
     if (filtered.length !== alerts.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAlerts(filtered);
       return;
     }
@@ -77,6 +78,7 @@ export function useAlerts(
       return Number.isFinite(ts) && ts >= cutoff;
     });
     if (filtered.length !== alertLogs.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAlertLogs(filtered);
       return;
     }

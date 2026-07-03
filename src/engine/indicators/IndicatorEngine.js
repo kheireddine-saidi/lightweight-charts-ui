@@ -134,7 +134,7 @@ export class IndicatorEngine {
    * @param {Record<string,boolean>} builtinConfig  - { sma: true, ema: false, … }
    * @param {object[]} [pineIndicators] - array of { id, source, params, title, enabled }
    */
-  init(data, builtinConfig = {}, pineIndicators = []) {
+  init(data, _builtinConfig = {}, _pineIndicators = []) {
     this._data = Array.isArray(data) ? data : [];
 
     // ── 1. Built-in indicators ──────────────────────────────────────────────
@@ -144,7 +144,7 @@ export class IndicatorEngine {
     // indicator config. _syncBuiltins() is intentionally not called from init().
 
     // ── 2. Pine indicators ──────────────────────────────────────────────────
-    this._syncPine(pineIndicators);
+    this._syncPine(_pineIndicators);
   }
 
   /**
@@ -188,7 +188,7 @@ export class IndicatorEngine {
    * @param {Record<string,boolean>} builtinConfig
    * @param {object[]} [pineIndicators]
    */
-  reattach(data, builtinConfig = {}, pineIndicators = []) {
+  reattach(data, _builtinConfig = {}, _pineIndicators = []) {
     this._data = Array.isArray(data) ? data : [];
 
     if (this._registry && this._chart) {
@@ -267,13 +267,13 @@ export class IndicatorEngine {
     if (this._registry && this._chart) {
       try {
         this._registry.clear(this._chart);
-      } catch {}
+      } catch { /* ignore — chart may already be detached */ }
     }
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
 
-  _syncBuiltins(config) {
+  _syncBuiltins(_config) {
     if (!this._registry || !this._chart) return;
     // We delegate actual add/remove to the caller's INDICATOR_CONSTRUCTORS
     // via updateBuiltins() since the constructors map lives in ChartComponent.

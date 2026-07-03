@@ -107,6 +107,10 @@ const EditablePrice: React.FC<EditablePriceProps> = ({
 
   useEffect(() => {
     if (editing) {
+      // Intentional: sync draft to external value when edit mode opens.
+      // This is safe here because `editing` only transitions false→true on user
+      // interaction (click), not in response to a previous render's state update.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDraft(value != null ? String(value) : '');
       requestAnimationFrame(() => inputRef.current?.focus());
     }

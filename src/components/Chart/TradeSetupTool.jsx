@@ -164,7 +164,7 @@ const TradeSetupTool = ({
 
   // ── hover ─────────────────────────────────────────────────────────────────
   // which handle element is hovered (set by onMouseEnter on SVG elements)
-  const [hoverInfo, setHoverInfo] = useState(null); // { zoneId, handle }
+  const [_hoverInfo, _setHoverInfo] = useState(null); // { zoneId, handle }
 
   // ── container dims ────────────────────────────────────────────────────────
   const [dims, setDims] = useState({ w: 0, h: 0 });
@@ -392,7 +392,7 @@ const TradeSetupTool = ({
 
     chartApi.subscribeCrosshairMove(onCrosshairMove);
     return () => {
-      try { chartApi.unsubscribeCrosshairMove(onCrosshairMove); } catch {}
+      try { chartApi.unsubscribeCrosshairMove(onCrosshairMove); } catch { /* ignore */ }
     };
   }, [active, chartApi, seriesApi, containerRef, dims.w, dataRef, magnetMode, magnetThresholdPx]);
 
@@ -597,7 +597,7 @@ const TradeSetupTool = ({
   useEffect(() => {
     if (!containerRef?.current) return;
     const el = containerRef.current;
-    const onDown = (e) => {
+    const onDown = (_e) => {
       // If a zone element stopped propagation, this won't fire
       // Only fires when clicking empty chart space
       if (!active && selectedId && !dragRef.current) {
@@ -637,7 +637,7 @@ const TradeSetupTool = ({
 
     const isClosed  = zone?.status === 'closed';
     const isFilled  = zone?.status === 'open';
-    const isPending = zone?.status === 'pending';
+    const _isPending = zone?.status === 'pending';
     // Entry line is locked once order is filled or closed — no drag allowed
     const entryLocked = isFilled || isClosed;
     // All handles are locked when closed — zone is a permanent historical annotation
@@ -647,7 +647,7 @@ const TradeSetupTool = ({
 
     const isDragging = dragRef.current?.zoneId === zoneId;
     const isActive = isSelected || isDragging;
-    const bodyCursor = isLive ? 'crosshair' : isClosed ? 'default' : (isSelected ? 'default' : 'pointer');
+    const _bodyCursor = isLive ? 'crosshair' : isClosed ? 'default' : (isSelected ? 'default' : 'pointer');
 
     // Make handle areas bigger so they're easier to grab
     const HANDLE_AREA = 12; // half-height of invisible hit rect on each line
@@ -758,7 +758,7 @@ const TradeSetupTool = ({
           { y: tpY,    col: TP_COLOR,    locked: false },
           { y: entryY, col: ENTRY_COLOR, locked: entryLocked },
           { y: slY,    col: SL_COLOR,    locked: false },
-        ].map(({ y, col, locked }, i) => (
+        ].map(({ y, col, locked: _locked }, i) => (
           <circle key={i} cx={left + width / 2} cy={y} r={5}
             fill={col} fillOpacity={0.8} stroke="#fff" strokeWidth={1}
             style={{ pointerEvents: 'none' }} />
@@ -829,7 +829,7 @@ const TradeSetupTool = ({
         {/* ── Action button: Delete (pending_draw/pending) | Close (open) | nothing (closed) ─── */}
         {isSelected && !isLive && zone?.status !== 'closed' && (() => {
           const isOpen    = zone?.status === 'open';
-          const isPending = zone?.status === 'pending';
+          const _isPending = zone?.status === 'pending';
           const isDraw    = zone?.status === 'pending_draw';
           const btnColor  = isOpen ? '#f0a500' : '#f23645';
           const btnLabel  = isOpen ? '✕ Close' : isDraw ? '✕ Cancel' : '✕ Cancel Order';

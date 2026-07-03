@@ -155,7 +155,7 @@ export class ChartDataManager {
 
   _clearSubscription() {
     if (this._unsubscribe) {
-      try { this._unsubscribe(); } catch (_) { /* ignore */ }
+      try { this._unsubscribe(); } catch { /* ignore */ }
       this._unsubscribe = null;
     }
   }

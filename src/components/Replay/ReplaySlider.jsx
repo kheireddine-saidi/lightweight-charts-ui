@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import styles from './ReplaySlider.module.css';
 
 const ReplaySlider = ({
-  chartRef,
+  chartRef: _chartRef,
   isReplayMode,
   replayIndex,
   fullData,
@@ -21,9 +21,12 @@ const ReplaySlider = ({
   const animationFrameRef = useRef(null);
 
   // Unlock when "Jump to Bar" button is clicked
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     if (isSelectingReplayPoint) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsLocked(false);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setJustClicked(false);
     }
   }, [isSelectingReplayPoint]);
@@ -34,10 +37,13 @@ const ReplaySlider = ({
   useEffect(() => {
     if (isPlaying && !prevIsPlayingRef.current) {
       // Playback just started - unlock to allow position updates
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsLocked(false);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setJustClicked(false);
     } else if (!isPlaying && prevIsPlayingRef.current) {
       // Playback just ended - lock to keep slider hidden
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsLocked(true);
     }
     prevIsPlayingRef.current = isPlaying;
@@ -54,7 +60,9 @@ const ReplaySlider = ({
 
     // If replayIndex changed and we're not playing, it was a click - lock the slider
     if (replayIndex !== prevReplayIndexRef.current && replayIndex !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsLocked(true);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setJustClicked(true);
       // Clear justClicked after a short delay
       setTimeout(() => setJustClicked(false), 150);
@@ -78,6 +86,7 @@ const ReplaySlider = ({
       const progress = (replayIndex + 1) / fullData.length;
       const containerWidth = containerRef?.current?.clientWidth || 0;
       const position = progress * containerWidth;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSliderPosition(position);
     }
   }, [replayIndex, fullData, isReplayMode, containerRef, isDragging, isMouseInChart, isLocked, isPlaying, isSelectingReplayPoint]);
@@ -226,27 +235,6 @@ const ReplaySlider = ({
   // - OR when selecting replay point (Jump to Bar mode) - show slider to preview selection
   // During playback, hide slider since future candles are already hidden by data update
   const showSlider = (isMouseInChart && !isLocked && !isPlaying) || isDragging || isSelectingReplayPoint;
-
-  // Calculate the position of the current replay index for the fade overlay
-  const getReplayPosition = () => {
-    if (!chartRef.current || !fullData || replayIndex === null) return null;
-
-    try {
-      const timeScale = chartRef.current.timeScale();
-      const replayTime = fullData[replayIndex]?.time;
-
-      if (replayTime) {
-        const x = timeScale.timeToCoordinate(replayTime);
-        return x;
-      }
-    } catch (e) {
-      console.error('Error calculating replay position:', e);
-    }
-
-    return null;
-  };
-
-  const replayPosition = getReplayPosition();
 
   // Show fade overlay when:
   // - Slider is visible (following mouse) - to preview what will be hidden

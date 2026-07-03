@@ -304,7 +304,7 @@ export class DrawingManager {
       if (alerts && typeof alerts.setSymbolName === 'function') {
         alerts.setSymbolName(symbol);
       }
-    } catch (_) { /* ignore */ }
+    } catch { /* ignore */ }
   }
 
   /**
@@ -316,7 +316,7 @@ export class DrawingManager {
   detachFromSeries(series) {
     if (!this._manager) return;
     try { this._manager.clearTools(); }    catch (_) { /* ignore */ }
-    try { series?.detachPrimitive(this._manager); } catch (_) { /* ignore */ }
+    try { series?.detachPrimitive(this._manager); } catch { /* ignore */ }
     if (import.meta.env.DEV) {
       window.lineToolManager = null;
       window.chartInstance   = null;

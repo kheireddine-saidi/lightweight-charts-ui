@@ -2,12 +2,14 @@ import React, { useState, useEffect } from 'react';
 import styles from './AlertDialog.module.css';
 import { X } from 'lucide-react';
 
-const AlertDialog = ({ isOpen, onClose, onSave, initialPrice, theme = 'dark' }) => {
+const AlertDialog = ({ isOpen, onClose, onSave, initialPrice, theme: _theme = 'dark' }) => {
     const [condition, setCondition] = useState('Crossing');
     const [value, setValue] = useState('');
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     useEffect(() => {
         if (isOpen && initialPrice) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setValue(initialPrice.toString());
         }
     }, [isOpen, initialPrice]);

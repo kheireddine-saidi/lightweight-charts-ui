@@ -25,7 +25,7 @@ function load() {
 }
 
 function save(settings) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch {}
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* ignore */ }
 }
 
 export const useChartSettingsStore = create((set, get) => ({
@@ -34,7 +34,7 @@ export const useChartSettingsStore = create((set, get) => ({
   setSetting: (key, value) => {
     const next = { ...get(), [key]: value };
     // Strip zustand action functions before persisting
-    const { setSetting, resetSettings, ...persistable } = next;
+    const { setSetting: _setSetting, resetSettings: _resetSettings, ...persistable } = next;
     save(persistable);
     set({ [key]: value });
   },

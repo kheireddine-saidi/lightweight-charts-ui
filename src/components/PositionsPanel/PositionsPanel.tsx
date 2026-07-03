@@ -269,14 +269,11 @@ const OpenTab = () => {
   const cancelPendingOrder = useTradingStore((s) => s.cancelPendingOrder);
   const updatePosition = useTradingStore((s) => s.updatePosition);
   const updatePendingOrder = useTradingStore((s) => s.updatePendingOrder);
-  // Per-symbol prices; fall back to global currentPrice for compat
-  const pricesBySymbol = useMarketStore((s) => s.pricesBySymbol);
+  // Per-symbol prices — subscribe to the whole map so the component re-renders on any tick
   const fallbackPrice  = useMarketStore((s) => s.currentPrice);
   const getPriceForSymbol = useMarketStore((s) => s.getPriceForSymbol);
   // Convenience: get the price for a given position (keyed by its symbol)
   const priceFor = (sym: string) => getPriceForSymbol(sym) || fallbackPrice;
-  // Backward-compat alias used by inline references below
-  const currentPrice = fallbackPrice;
 
   const allItems = [...positions, ...pendingOrders];
 

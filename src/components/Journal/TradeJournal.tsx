@@ -287,6 +287,7 @@ const TradeJournal: React.FC = () => {
   },[]);
 
   useEffect(()=>{
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     reload();
     const u1=EventBus.on(Events.POSITION_CLOSED,()=>setTimeout(reload,120));
     const u2=EventBus.on(Events.ORDER_FILLED,()=>setTimeout(reload,120));
@@ -338,14 +339,22 @@ const TradeJournal: React.FC = () => {
   const addTag = () => {
     if (!newLabel.trim()) return;
     const tag:JournalTag = {id:`tag_${Date.now()}`,label:newLabel.trim(),color:newColor};
-    tagTab==='criteria'?tradeJournalRepository.upsertCriteriaTag(tag):tradeJournalRepository.upsertTimeframeTag(tag);
+    if (tagTab==='criteria') {
+      tradeJournalRepository.upsertCriteriaTag(tag);
+    } else {
+      tradeJournalRepository.upsertTimeframeTag(tag);
+    }
     setNewLabel(''); setNewColor(PRESETS[0]); reload();
   };
   const deleteTag = (id:string) => {
     // Deleting a tag from the library does NOT remove it from journal entries —
     // entries store snapshots (label+color) so historical context is preserved.
     // The tag just disappears from the selection dropdown for future use.
-    tagTab==='criteria'?tradeJournalRepository.deleteCriteriaTag(id):tradeJournalRepository.deleteTimeframeTag(id);
+    if (tagTab==='criteria') {
+      tradeJournalRepository.deleteCriteriaTag(id);
+    } else {
+      tradeJournalRepository.deleteTimeframeTag(id);
+    }
     reload();
   };
 

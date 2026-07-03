@@ -3,7 +3,7 @@ import styles from './Toast.module.css';
 import { Check } from 'lucide-react';
 import PropTypes from 'prop-types';
 
-const SnapshotToast = ({ message, onClose }) => {
+const SnapshotToast = ({ message, onClose: _onClose }) => {
     return (
         <div className={styles.snapshotToast}>
             <div className={styles.snapshotContent}>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { getTickerPrice, subscribeToMultiTicker } from '../../services/binance';
 
 const safeParseJSON = (value: string | null, fallback: any) => {
@@ -27,7 +27,7 @@ export function useWatchlist(onShowToast: (msg: string, type: string) => void) {
 
   // Fetch watchlist data
   useEffect(() => {
-    let ws: WebSocket | null = null;
+    let ws: { close: () => void; readyState: number } | null = null;
     let mounted = true;
     let initialDataLoaded = false;
     const abortController = new AbortController();
@@ -118,7 +118,7 @@ export function useWatchlist(onShowToast: (msg: string, type: string) => void) {
 
   const handleWatchlistSymbolSelect = (
     symbol: string,
-    setCharts: Function,
+    setCharts: (updater: (prev: any[]) => any[]) => void,
     activeChartId: number
   ) => {
     setCharts((prev: any[]) =>

@@ -3,14 +3,21 @@ import {
     LineSeries,
     createSeriesMarkers,
 } from 'lightweight-charts';
+// Static imports — not passed as deps because they are module-level constants,
+// not values that live in ChartComponent's render scope.
+import { ReplayFeed } from '../feeds/ReplayFeed';
+import { intervalToSeconds } from '../utils/timeframes';
+import { transformData } from '../engine/chart/SeriesManager';
 
 /**
  * useChartImperativeHandle
  *
  * Moves the useImperativeHandle body out of ChartComponent to reduce its size.
- * All refs and helpers the exposed methods need are passed in as a deps object.
+ * All refs, state setters, and callbacks the exposed methods need are passed in
+ * as a single deps object so they are always current without re-creating the handle.
  */
 export function useChartImperativeHandle(ref, {
+    // ── Refs already present in original call site ──────────────────────────
     lineToolManagerRef,
     chartRef,
     dataRef,
@@ -24,6 +31,29 @@ export function useChartImperativeHandle(ref, {
     applyDefaultCandlePosition,
     setCommittedTradeZones,
     symbol,
+    // ── Wiring-gap deps: timer ───────────────────────────────────────────────
+    priceScaleTimerRef,         // useRef — owns the countdown timer plugin instance
+    // ── Wiring-gap deps: replay state ────────────────────────────────────────
+    setIsReplayMode,            // useState setter — toggleReplay flips this
+    replayIndexRef,             // useLatestRef(replayIndex) — current bar index
+    replayFeedRef,              // useRef — legacy ReplayFeed instance
+    getOrCreateReplayControllerRef, // useRef<fn> — ref to getOrCreateReplayController (avoids TDZ)
+    updateReplayDataRef,        // useRef<fn> — ref to updateReplayData callback
+    replayControllerRef,        // useRef — ReplayController instance
+    replayStop,                 // from useReplayEngine — stops the clock
+    chartTypeRef,               // useRef(chartType) — always-current chart type
+    // updateIndicators is NOT passed directly (TDZ risk — declared after hook call site).
+    // All call sites inside this hook use updateIndicatorsRef.current instead.
+    indicators,                 // prop — current indicator config object
+    setIsSelectingReplayPoint,  // useState setter — clears point-selection mode on exit
+    fadedSeriesRef,             // useRef — the faded "future" series shown in replay
+    onReplayModeChange,         // prop callback — notifies parent of mode change
+    // ── Wiring-gap deps: follower/sync ───────────────────────────────────────
+    followerFullDataRef,        // useRef([]) — HTF snapshot for follower sync
+    interval,                   // prop string — this chart's timeframe (e.g. '1h')
+    // ── Wiring-gap deps: transform refs ──────────────────────────────────────
+    transformDataRef,           // useRef<fn> — ref to transformData (for sync paths)
+    updateIndicatorsRef,        // useRef<fn> — ref to updateIndicators (for sync paths)
 }) {
     useImperativeHandle(ref, () => ({
     undo: () => {
@@ -257,14 +287,14 @@ export function useChartImperativeHandle(ref, {
               size: 1,
             }))
           );
-        } catch (e) { /* ignore */ }
+        } catch { /* ignore */ }
       }
     }
     if (id.startsWith('tl_') || type === 'line') {
       const lineInfo = tradeLinesRef.current.get(id);
       if (lineInfo) {
         const { series, chart } = lineInfo;
-        try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+        try { chart.removeSeries(series); } catch { /* ignore */ }
         tradeLinesRef.current.delete(id);
       }
     }
@@ -273,7 +303,7 @@ export function useChartImperativeHandle(ref, {
       const lineInfo = tradeLinesRef.current.get(id);
       if (lineInfo) {
         const { series, chart } = lineInfo;
-        try { chart.removeSeries(series); } catch (e) { /* ignore */ }
+        try { chart.removeSeries(series); } catch { /* ignore */ }
         tradeLinesRef.current.delete(id);
       }
     }
@@ -337,7 +367,7 @@ export function useChartImperativeHandle(ref, {
 
                 // Phase 7: Start the ReplayController — it owns the REPLAY_TICK
                 // and CANDLE subscriptions from this point on.
-                const ctrl = getOrCreateReplayController();
+                const ctrl = getOrCreateReplayControllerRef.current?.();
                 ctrl.enter(fullDataRef.current, startIndex);
 
                 // Initial chart update: show data up to startIndex.
@@ -358,13 +388,13 @@ export function useChartImperativeHandle(ref, {
                     if (mainSeriesRef.current && fullDataRef.current.length > 0) {
                         dataRef.current = fullDataRef.current;
                         mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
-                        updateIndicators(fullDataRef.current, indicators);
+                        updateIndicatorsRef.current?.(fullDataRef.current, indicators);
                     }
                 }
 
                 setIsSelectingReplayPoint(false);
                 if (fadedSeriesRef.current && chartRef.current) {
-                    try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch (e) { /* ignore */ }
+                    try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch { /* ignore */ }
                     fadedSeriesRef.current = null;
                 }
             }

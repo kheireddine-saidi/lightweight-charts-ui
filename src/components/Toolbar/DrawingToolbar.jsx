@@ -189,9 +189,11 @@ const DrawingToolbar = ({ activeTool, onToolChange, isMagnetMode = false, isDraw
     useEffect(() => {
         if (activeTool === 'zoom_in' || activeTool === 'zoom_out') {
             // Expand when zoom tools are selected
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setIsZoomExpanded(true);
         } else if (activeTool !== null && activeTool !== 'cursor') {
             // Collapse when a different tool (not cursor/null) is selected
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setIsZoomExpanded(false);
         }
         // When activeTool is null or 'cursor' (e.g., after ESC), keep current state

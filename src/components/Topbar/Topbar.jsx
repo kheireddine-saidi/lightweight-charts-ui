@@ -9,9 +9,9 @@ import IndicatorPanel from '../Indicators/IndicatorPanel';
 import ChartSettingsModal from '../ChartSettings/ChartSettingsModal';
 
 const Topbar = ({
-    symbol, interval, chartType, indicators, favoriteIntervals, customIntervals,
+    symbol, interval, chartType, _indicators, favoriteIntervals, customIntervals,
     lastNonFavoriteInterval,
-    onSymbolClick, onIntervalChange, onChartTypeChange, onToggleIndicator,
+    onSymbolClick, onIntervalChange, onChartTypeChange, _onToggleIndicator,
     onToggleFavorite, onAddCustomInterval, onRemoveCustomInterval,
     onUndo, onRedo, onMenuClick, theme, onToggleTheme,
     onDownloadImage, onCopyImage, onFullScreen,

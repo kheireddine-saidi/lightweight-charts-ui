@@ -105,8 +105,8 @@ const SliderRow = styled.div`
   display: flex; flex-direction: column; gap: 6px;
 `;
 
-const SliderTrack = styled.input.attrs({ type: 'range' })`
-  width: 100%; accent-color: ${(p: { theme?: Theme }) => p.theme?.blue ?? '#2962ff'};
+const SliderTrack = styled.input.attrs({ type: 'range' })<{ $accentColor?: string }>`
+  width: 100%; accent-color: ${(p) => p.$accentColor ?? '#2962ff'};
 `;
 
 const SliderValue = styled.span<{ $t: Theme }>`
@@ -204,6 +204,7 @@ const ChartSettingsModal: React.FC<ChartSettingsModalProps> = ({ onClose, theme 
                 <SliderValue $t={t}>{settings.magnetThresholdPx}px</SliderValue>
               </Row>
               <SliderTrack
+                $accentColor={t.blue ?? '#2962ff'}
                 min={2} max={40} step={1}
                 value={settings.magnetThresholdPx}
                 onChange={(e) => setSetting('magnetThresholdPx', parseInt(e.target.value))}
