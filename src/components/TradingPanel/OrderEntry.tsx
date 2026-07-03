@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import styled from 'styled-components';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore } from '../../stores/marketStore';
+import { useWorkspaceStore } from '../../features/workspace/WorkspaceStore';
 
 const Form = styled.div`
   display: flex;
@@ -76,11 +77,12 @@ export const OrderEntry: React.FC = () => {
   const [takeProfit, setTakeProfit] = useState('');
 
   const { openPosition } = useTradingStore();
-  const currentPrice = useMarketStore((state) => state.currentPrice);
+  const symbol = useWorkspaceStore((s) => s.getActiveChart()?.symbol ?? 'BTCUSDT');
+  const currentPrice = useMarketStore((s) => s.getPriceForSymbol(symbol) || s.currentPrice);
 
   const handlePlaceOrder = () => {
     openPosition({
-      symbol: 'EURUSD',
+      symbol,
       side,
       type: orderType,
       entryPrice: currentPrice,

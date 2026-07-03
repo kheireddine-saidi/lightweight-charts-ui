@@ -237,9 +237,10 @@ const TradingPanel = ({ currentTime }) => {
   const [sizeOverridden, setSizeOverridden] = useState(false);
 
   const { openPosition, balance, equity, reservedMargin = 0 } = useTradingStore();
-  const currentPrice   = useMarketStore(s => s.currentPrice);
   const tradeSetup     = useTradeSetupStore(s => s);
   const symbol         = useWorkspaceStore(s => s.getActiveChart()?.symbol ?? 'BTCUSDT');
+  // Use per-symbol price; fall back to most-recently-updated price for compat
+  const currentPrice   = useMarketStore(s => s.getPriceForSymbol(symbol) || s.currentPrice);
   const riskPerTradePercent = useExecutionSettingsStore(s => s.riskPerTradePercent);
 
   // Track price direction for colour indicator

@@ -50,12 +50,13 @@ const CloseButton = styled.button`
 export const OpenPositions: React.FC = () => {
   const positions = useTradingStore((state) => state.positions);
   const closePosition = useTradingStore((state) => state.closePosition);
-  const currentPrice = useMarketStore((state) => state.currentPrice);
+  const getPriceForSymbol = useMarketStore((state) => state.getPriceForSymbol);
+  const fallbackPrice = useMarketStore((state) => state.currentPrice);
 
-  // Update PnL on price change
+  // Update PnL on price change — currently no-op, kept for future use
   React.useEffect(() => {
     // useTradingStore.getState().updatePnL(currentPrice);
-  }, [currentPrice]);
+  }, [fallbackPrice]);
 
   if (positions.length === 0) {
     return <div style={{ padding: '20px', color: '#787b86', textAlign: 'center' }}>No open positions</div>;
@@ -75,7 +76,9 @@ export const OpenPositions: React.FC = () => {
         </tr>
       </thead>
       <tbody>
-        {positions.map((pos) => (
+        {positions.map((pos) => {
+          const posPrice = getPriceForSymbol(pos.symbol) || fallbackPrice;
+          return (
           <tr key={pos.id}>
             <td><SideBadge side={pos.side}>{pos.side.toUpperCase()}</SideBadge></td>
             <td>{pos.leverage}x</td>
@@ -84,12 +87,13 @@ export const OpenPositions: React.FC = () => {
             <td><PnL value={pos.pnl}>{pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)} ({pos.pnlPercent.toFixed(2)}%)</PnL></td>
             <td>{pos.stopLoss || '-'} / {pos.takeProfit || '-'}</td>
             <td>
-              <CloseButton onClick={() => closePosition(pos.id, currentPrice)}>
+              <CloseButton onClick={() => closePosition(pos.id, posPrice)}>
                 Close
               </CloseButton>
             </td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </Table>
   );

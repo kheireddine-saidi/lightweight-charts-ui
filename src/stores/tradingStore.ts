@@ -169,6 +169,7 @@ export const useTradingStore = create<TradingState>((set, get) => {
         closedPositions: snap.closedTrades as ClosedPosition[],
         balance:         snap.balance,
         equity:          snap.equity,
+        reservedMargin:  snap.reservedMargin ?? executionEngine.reservedMargin,
       });
     },
   };

@@ -19,6 +19,7 @@
  */
 
 import { create } from 'zustand';
+import { WorkspaceRepository } from './WorkspaceRepository';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -54,14 +55,13 @@ const sanitizeCustomIntervals = (raw) => {
 // ─── Initial State Loaders ────────────────────────────────────────────────────
 
 const loadSavedLayout = () => {
-  const saved = safeParseJSON(localStorage.getItem('tv_saved_layout'), null);
-  return saved ?? null;
+  return WorkspaceRepository.loadSavedLayout() ?? null;
 };
 
 const makeDefaultChart = (id = 1) => ({
   id,
   symbol: 'BTCUSDT',
-  interval: localStorage.getItem('tv_interval') || '1d',
+  interval: WorkspaceRepository.loadInterval('1d'),
   indicators: { sma: false, ema: false },
   comparisonSymbols: [],
 });
@@ -79,13 +79,13 @@ export const useWorkspaceStore = create((set, get) => {
     charts: savedLayout?.charts ?? [makeDefaultChart(1)],
 
     favoriteIntervals: sanitizeFavoriteIntervals(
-      safeParseJSON(localStorage.getItem('tv_fav_intervals_v2'), null)
+      WorkspaceRepository.loadFavouriteIntervals(null)
     ),
     customIntervals: sanitizeCustomIntervals(
-      safeParseJSON(localStorage.getItem('tv_custom_intervals'), [])
+      WorkspaceRepository.loadCustomIntervals([])
     ),
     lastNonFavoriteInterval: (() => {
-      const saved = localStorage.getItem('tv_last_nonfav_interval');
+      const saved = WorkspaceRepository.loadLastNonFavInterval();
       return isValidIntervalValue(saved) ? saved : null;
     })(),
 
@@ -115,9 +115,9 @@ export const useWorkspaceStore = create((set, get) => {
       get().updateChart(activeChartId, { interval });
       if (!favoriteIntervals.includes(interval)) {
         set({ lastNonFavoriteInterval: interval });
-        try { localStorage.setItem('tv_last_nonfav_interval', interval); } catch (_) {}
+        try { WorkspaceRepository.saveLastNonFavInterval(interval); } catch (_) {}
       }
-      try { localStorage.setItem('tv_interval', interval); } catch (_) {}
+      try { WorkspaceRepository.saveInterval(interval); } catch (_) {}
     },
 
     toggleActiveChartIndicator: (name) => {
@@ -180,7 +180,7 @@ export const useWorkspaceStore = create((set, get) => {
     saveLayout: () => {
       const { layout, charts } = get();
       try {
-        localStorage.setItem('tv_saved_layout', JSON.stringify({ layout, charts }));
+        WorkspaceRepository.saveLayout(layout, charts);
         return true;
       } catch (err) {
         console.error('[WorkspaceStore] Failed to save layout:', err);
@@ -199,7 +199,7 @@ export const useWorkspaceStore = create((set, get) => {
       }));
       try {
         const next = get().favoriteIntervals;
-        localStorage.setItem('tv_fav_intervals_v2', JSON.stringify(next));
+        WorkspaceRepository.saveFavouriteIntervals(next);
       } catch (_) {}
     },
 
@@ -214,7 +214,7 @@ export const useWorkspaceStore = create((set, get) => {
       if (customIntervals.some((i) => i.value === newValue)) return { error: 'Interval already available!' };
       const next = [...customIntervals, { value: newValue, label: newValue, isCustom: true }];
       set({ customIntervals: next });
-      try { localStorage.setItem('tv_custom_intervals', JSON.stringify(next)); } catch (_) {}
+      try { WorkspaceRepository.saveCustomIntervals(next); } catch (_) {}
       return { ok: true };
     },
 
@@ -225,7 +225,7 @@ export const useWorkspaceStore = create((set, get) => {
       }));
       try {
         const { customIntervals } = get();
-        localStorage.setItem('tv_custom_intervals', JSON.stringify(customIntervals));
+        WorkspaceRepository.saveCustomIntervals(customIntervals);
       } catch (_) {}
       // If the current interval was removed, fall back to 1d
       const { getActiveChart, setActiveChartInterval } = get();

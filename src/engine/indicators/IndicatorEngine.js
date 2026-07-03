@@ -138,7 +138,10 @@ export class IndicatorEngine {
     this._data = Array.isArray(data) ? data : [];
 
     // ── 1. Built-in indicators ──────────────────────────────────────────────
-    this._syncBuiltins(builtinConfig);
+    // NOTE: built-ins are NOT synced here because the INDICATOR_CONSTRUCTORS
+    // map lives in ChartComponent/IndicatorRenderer, not here. Callers must
+    // call updateBuiltins(config, constructors) after init() to apply built-in
+    // indicator config. _syncBuiltins() is intentionally not called from init().
 
     // ── 2. Pine indicators ──────────────────────────────────────────────────
     this._syncPine(pineIndicators);
@@ -196,8 +199,7 @@ export class IndicatorEngine {
       wrapper.setData(this._data);
       wrapper.runNow().catch(() => {});
     }
-
-    this._syncBuiltins(builtinConfig);
+    // Built-ins are synced by the caller via updateBuiltins() — see init() note.
   }
 
   /**

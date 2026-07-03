@@ -269,7 +269,14 @@ const OpenTab = () => {
   const cancelPendingOrder = useTradingStore((s) => s.cancelPendingOrder);
   const updatePosition = useTradingStore((s) => s.updatePosition);
   const updatePendingOrder = useTradingStore((s) => s.updatePendingOrder);
-  const currentPrice = useMarketStore((s) => s.currentPrice);
+  // Per-symbol prices; fall back to global currentPrice for compat
+  const pricesBySymbol = useMarketStore((s) => s.pricesBySymbol);
+  const fallbackPrice  = useMarketStore((s) => s.currentPrice);
+  const getPriceForSymbol = useMarketStore((s) => s.getPriceForSymbol);
+  // Convenience: get the price for a given position (keyed by its symbol)
+  const priceFor = (sym: string) => getPriceForSymbol(sym) || fallbackPrice;
+  // Backward-compat alias used by inline references below
+  const currentPrice = fallbackPrice;
 
   const allItems = [...positions, ...pendingOrders];
 
@@ -279,9 +286,9 @@ const OpenTab = () => {
 
   const fmt = (n: number, dec = 5) => n.toFixed(dec);
 
-  // Compute live total PnL from current price
+  // Compute live total PnL using per-symbol prices
   const totalPnL = positions.reduce((s, p) => {
-    const live = livePnL(p, currentPrice);
+    const live = livePnL(p, priceFor(p.symbol));
     return s + (live ? live.pnl : 0);
   }, 0);
 
@@ -306,7 +313,8 @@ const OpenTab = () => {
           </thead>
           <tbody>
             {positions.map((pos) => {
-              const live = livePnL(pos, currentPrice);
+              const posPrice = priceFor(pos.symbol);
+              const live = livePnL(pos, posPrice);
               const pnl = live ? live.pnl : pos.pnl;
               const pnlPct = live ? live.pnlPct : pos.pnlPercent;
               return (
@@ -325,7 +333,7 @@ const OpenTab = () => {
                       onCommit={() => {}}
                     />
                   </TD>
-                  <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
+                  <TD style={{ color: C.textMuted }}>{fmt(posPrice)}</TD>
                   <TD>
                     <PnLCell $val={pnl}>
                       {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
@@ -339,7 +347,7 @@ const OpenTab = () => {
                       value={pos.stopLoss}
                       color={C.red}
                       onValidate={(newVal) => {
-                        const r = validateTPSL(pos.side, 'open', currentPrice, pos.takeProfit ?? null, newVal);
+                        const r = validateTPSL(pos.side, 'open', posPrice, pos.takeProfit ?? null, newVal);
                         return { valid: r.valid || r.field !== 'sl', message: r.field === 'sl' ? r.message : null };
                       }}
                       onCommit={(newVal) => updatePosition(pos.id, { stopLoss: newVal })}
@@ -349,7 +357,7 @@ const OpenTab = () => {
                       value={pos.takeProfit}
                       color={C.green}
                       onValidate={(newVal) => {
-                        const r = validateTPSL(pos.side, 'open', currentPrice, newVal, pos.stopLoss ?? null);
+                        const r = validateTPSL(pos.side, 'open', posPrice, newVal, pos.stopLoss ?? null);
                         return { valid: r.valid || r.field !== 'tp', message: r.field === 'tp' ? r.message : null };
                       }}
                       onCommit={(newVal) => updatePosition(pos.id, { takeProfit: newVal })}
@@ -359,12 +367,14 @@ const OpenTab = () => {
                     {formatDateTime(pos.filledTime ?? pos.entryTime)}
                   </TD>
                   <TD>
-                    <ActionBtn onClick={() => closePosition(pos.id, currentPrice)}>Close</ActionBtn>
+                    <ActionBtn onClick={() => closePosition(pos.id, posPrice)}>Close</ActionBtn>
                   </TD>
                 </TR>
               );
             })}
-            {pendingOrders.map((order) => (
+            {pendingOrders.map((order) => {
+              const orderPrice = priceFor(order.symbol);
+              return (
               <TR key={order.id}>
                 <TD style={{ color: C.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{order.id}</TD>
                 <TD>
@@ -382,7 +392,7 @@ const OpenTab = () => {
                     onCommit={(newVal) => updatePendingOrder(order.id, { entryPrice: newVal, limitPrice: newVal })}
                   />
                 </TD>
-                <TD style={{ color: C.textMuted }}>{fmt(currentPrice)}</TD>
+                <TD style={{ color: C.textMuted }}>{fmt(orderPrice)}</TD>
                 <TD style={{ color: C.textDim }}>—</TD>
                 <TD style={{ color: C.textMuted, whiteSpace: 'nowrap' }}>
                   {/* Pending orders: SL/TP validated against the order's ENTRY price, not market */}
@@ -413,7 +423,8 @@ const OpenTab = () => {
                   <ActionBtn onClick={() => cancelPendingOrder(order.id)}>Cancel</ActionBtn>
                 </TD>
               </TR>
-            ))}
+            );// end pendingOrders map return
+            })}
           </tbody>
         </Table>
       </ScrollArea>

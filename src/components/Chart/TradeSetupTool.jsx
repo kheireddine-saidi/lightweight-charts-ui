@@ -337,7 +337,11 @@ const TradeSetupTool = ({
   const closeZonePosition = useCallback((zoneId) => {
     const zone = resolvedZones.find(z => z.id === zoneId);
     if (!zone?.positionId) return;
-    const mktPrice = useMarketStore.getState().currentPrice ?? zone.entryPrice;
+    // getPriceForSymbol uses zone.symbol if present; falls back to most-recently-updated price
+    const marketState = useMarketStore.getState();
+    const mktPrice = (zone.symbol ? marketState.getPriceForSymbol(zone.symbol) : null)
+      ?? marketState.currentPrice
+      ?? zone.entryPrice;
     useTradingStore.getState().closePosition(zone.positionId, mktPrice, Math.floor(Date.now() / 1000));
     // Zone status updates to 'closed' automatically — derived live from
     // tradingStore.closedPositions on the next render (see resolvedZones above).

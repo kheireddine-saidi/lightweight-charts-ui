@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
+import React, { useEffect, useRef, useState, forwardRef, useCallback } from 'react';
 import {
     createChart,
     LineSeries,
@@ -19,6 +19,9 @@ import { executionEngine } from '../../engine/trading/ExecutionEngine';
 import { useIndicatorStore } from '../../stores/indicatorStore';
 // PineTSRuntime moved to IndicatorRenderer (Phase 5)
 import { intervalToSeconds } from '../../utils/timeframes';
+import { useLatestRef } from '../../hooks/useLatestRef';
+import { useChartImperativeHandle } from '../../hooks/useChartImperativeHandle';
+import { useChartReplayBinding } from '../../hooks/useChartReplayBinding';
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
 // IndicatorEngine moved to IndicatorRenderer (Phase 5)
@@ -60,7 +63,7 @@ const ChartComponent = forwardRef(({
 
     // Fallback to live feed if no feed prop provided (backward compat)
     const activeFeed = feed ?? binanceLiveFeedSingleton;
-    const activeFeedRef = useRef(activeFeed);
+    const activeFeedRef = useLatestRef(activeFeed);
 
     // ── Magnet mode tracking refs ───────────────────────────────────────────
     // magnetModeRef: always-current copy of the magnetMode prop, readable from
@@ -70,10 +73,8 @@ const ChartComponent = forwardRef(({
     //   tracked via subscribeCrosshairMove. The bundled LineToolManager plugin's
     //   coordinateToPrice(y) call has no X parameter, so this is how the magnet
     //   wrapper knows WHICH candle's OHLC to snap against.
-    const magnetModeRef = useRef(magnetMode);
-    useEffect(() => { magnetModeRef.current = magnetMode; }, [magnetMode]);
+    const magnetModeRef = useLatestRef(magnetMode);
     const magnetLastLogicalRef = useRef(null);
-    useEffect(() => { activeFeedRef.current = activeFeed; }, [activeFeed]);
 
     const chartContainerRef = useRef();
     const [isLoading, setIsLoading] = useState(true);
@@ -122,8 +123,7 @@ const ChartComponent = forwardRef(({
     } = useReplayEngine();
 
     const [isReplayMode, setIsReplayMode] = useState(false);
-    const isReplayModeRef = useRef(false); // Ref to track replay mode in callbacks
-    useEffect(() => { isReplayModeRef.current = isReplayMode; }, [isReplayMode]);
+    const isReplayModeRef = useLatestRef(isReplayMode); // Ref to track replay mode in callbacks
 
     const [isSelectingReplayPoint, setIsSelectingReplayPoint] = useState(false);
     const fullDataRef = useRef([]); // Store full data for replay
@@ -221,7 +221,7 @@ const ChartComponent = forwardRef(({
                 if (isReplayModeRef.current) return;
                 dataRef.current = allData;
 
-                EventBus.emit(Events.PRICE_TICK, { price: candle.close, time: candle.time });
+                EventBus.emit(Events.PRICE_TICK, { price: candle.close, time: candle.time, symbol });
                 executionEngine.processTick(symbol, candle.close, candle.time);
 
                 if (isClosed) {
@@ -291,13 +291,11 @@ const ChartComponent = forwardRef(({
 
 
     // Derived refs kept in sync with hook state (needed in callbacks/closures)
-    const replayIndexRef = useRef(null);
-    const isPlayingRef = useRef(false);
+    const replayIndexRef = useLatestRef(replayIndex);
+    const isPlayingRef = useLatestRef(isPlaying);
     const updateReplayDataRef = useRef(null); // Ref to store updateReplayData function
     const transformDataRef = useRef(null);   // Ref to store transformData function
     const updateIndicatorsRef = useRef(null); // Ref to store updateIndicators function
-    useEffect(() => { replayIndexRef.current = replayIndex; }, [replayIndex]);
-    useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
 
     const DEFAULT_CANDLE_WINDOW = 230;
     const DEFAULT_RIGHT_OFFSET = 10;
@@ -344,482 +342,22 @@ const ChartComponent = forwardRef(({
     }, [chartType]);
 
     // Expose undo/redo and line tool manager to parent
-useImperativeHandle(ref, () => ({
-    undo: () => {
-        if (lineToolManagerRef.current) lineToolManagerRef.current.undo();
-    },
-    redo: () => {
-        if (lineToolManagerRef.current) lineToolManagerRef.current.redo();
-    },
-    // Scroll chart so the candle at `time` (unix seconds) is centered in viewport.
-    scrollToTime: (time) => {
-        if (!chartRef.current) return;
-        try {
-            const ts = chartRef.current.timeScale();
-            // Get current visible range width to keep context around the target candle
-            const vr = ts.getVisibleRange();
-            const halfSpan = vr ? Math.round((vr.to - vr.from) / 2) : 50 * 60;
-            ts.setVisibleRange({ from: time - halfSpan, to: time + halfSpan });
-        } catch (e) {
-            console.warn('[scrollToTime]', e);
-        }
-    },
-    getLineToolManager: () => lineToolManagerRef.current,
-    clearTools: () => {
-        if (lineToolManagerRef.current) lineToolManagerRef.current.clearTools();
-    },
-    addPriceAlert: (alert) => {
-        try {
-            const manager = lineToolManagerRef.current;
-            const userAlerts = manager && manager._userPriceAlerts;
-            if (!userAlerts || !alert || alert.price == null) return;
-            if (typeof userAlerts.setSymbolName === 'function') {
-                userAlerts.setSymbolName(symbol);
-            }
-            const priceNum = Number(alert.price);
-            if (!Number.isFinite(priceNum)) return;
-            if (typeof userAlerts.addAlertWithCondition === 'function') {
-                userAlerts.addAlertWithCondition(priceNum, 'crossing');
-            } else if (typeof userAlerts.openEditDialog === 'function') {
-                userAlerts.openEditDialog(alert.id, {
-                    price: priceNum,
-                    condition: 'crossing',
-                });
-            }
-        } catch (err) {
-            console.warn('Failed to add price alert to chart', err);
-        }
-    },
-    removePriceAlert: (externalId) => {
-        try {
-            const manager = lineToolManagerRef.current;
-            const userAlerts = manager && manager._userPriceAlerts;
-            if (!userAlerts || !externalId) return;
-            if (typeof userAlerts.removeAlert === 'function') {
-                userAlerts.removeAlert(externalId);
-            }
-        } catch (err) {
-            console.warn('Failed to remove price alert from chart', err);
-        }
-    },
-    restartPriceAlert: (price, condition = 'crossing') => {
-        try {
-            const manager = lineToolManagerRef.current;
-            const userAlerts = manager && manager._userPriceAlerts;
-            if (!userAlerts || price == null) return;
-            const priceNum = Number(price);
-            if (!Number.isFinite(priceNum)) return;
-            if (typeof userAlerts.addAlertWithCondition === 'function') {
-                userAlerts.addAlertWithCondition(priceNum, condition === 'crossing' ? 'crossing' : condition);
-            }
-        } catch (err) {
-            console.warn('Failed to restart price alert on chart', err);
-        }
-    },
-    resetZoom: () => {
-        applyDefaultCandlePosition(dataRef.current.length);
-    },
-    getChartContainer: () => chartContainerRef.current,
-    getCurrentPrice: () => {
-        if (dataRef.current && dataRef.current.length > 0) {
-            const lastData = dataRef.current[dataRef.current.length - 1];
-            return lastData.close ?? lastData.value;
-        }
-        return null;
-    },
-    getCurrentOHLC: () => {
-        if (dataRef.current && dataRef.current.length > 0) {
-            const lastData = dataRef.current[dataRef.current.length - 1];
-            return {
-                open: lastData.open,
-                high: lastData.high,
-                low: lastData.low,
-                close: lastData.close ?? lastData.value,
-                time: lastData.time,
-            };
-        }
-        return null;
-    },
-    // --- NEW METHODS for trading markers ---
-  getCurrentTime: () => {
-    if (dataRef.current && dataRef.current.length > 0) {
-      return dataRef.current[dataRef.current.length - 1].time;
-    }
-    return Math.floor(Date.now() / 1000);
-  },
-
-  /**
-   * Add a trade marker pinned to a specific candle bar.
-   * Uses createSeriesMarkers (v5 API) attached to the main series so the
-   * marker is always positioned exactly at the correct bar, with an arrow
-   * shape and a B/S label.
-   *
-   * @param {number}  time    – Unix timestamp (seconds) of the fill candle
-   * @param {number}  price   – fill price (used to decide above/below bar)
-   * @param {string}  text    – label shown on the marker (e.g. "B", "S", "✕ +12.50")
-   * @param {string}  color   – hex colour
-   * @param {'buy'|'sell'|'close'} [kind='buy'] – controls arrow direction
-   */
-  addMarker: (time, price, text, color, kind) => {
-    if (!mainSeriesRef.current) return null;
-    try {
-      // Snap the requested time to the nearest bar that actually exists in the series.
-      // This is required because createSeriesMarkers positions markers by matching
-      // the time against the series time-scale index. If the time doesn't match an
-      // existing bar exactly, lightweight-charts v5 uses NearestLeft which may end up
-      // on the wrong bar. By snapping here we guarantee exact placement.
-      const data = dataRef.current;
-      let snappedTime = time;
-      if (data && data.length > 0) {
-        // Binary search for the bar whose time is closest to (and <= ) the requested time
-        let lo = 0, hi = data.length - 1, bestIdx = 0;
-        while (lo <= hi) {
-          const mid = (lo + hi) >> 1;
-          if (data[mid].time <= time) { bestIdx = mid; lo = mid + 1; }
-          else { hi = mid - 1; }
-        }
-        snappedTime = data[bestIdx].time;
-      }
-
-      // Lazy-create the markers primitive once per chart instance
-      if (!tradeMarkersPrimitiveRef.current) {
-        tradeMarkersPrimitiveRef.current = createSeriesMarkers(mainSeriesRef.current, []);
-      }
-
-      const id = 'tm_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-
-      // Determine shape & position from kind/text
-      const isSell = kind === 'sell' || text === 'S';
-      const isClose = kind === 'close' || (typeof text === 'string' && text.startsWith('✕'));
-
-      let shape, position;
-      if (isClose) {
-        shape = 'circle';
-        // Exit: close long → marker above the exit bar; close short → below
-        position = isSell ? 'belowBar' : 'aboveBar';
-      } else if (isSell) {
-        shape = 'arrowDown';
-        position = 'aboveBar';
-      } else {
-        shape = 'arrowUp';
-        position = 'belowBar';
-      }
-
-      const entry = { id, time: snappedTime, price, text: text ?? '', color: color || '#2962FF', shape, position };
-      tradeMarkerListRef.current = [...tradeMarkerListRef.current, entry];
-
-      // Build the marker list sorted by time (required by lightweight-charts)
-      const sorted = [...tradeMarkerListRef.current].sort((a, b) => a.time - b.time);
-      tradeMarkersPrimitiveRef.current.setMarkers(
-        sorted.map(m => ({
-          time: m.time,
-          position: m.position,
-          shape: m.shape,
-          color: m.color,
-          text: m.text,
-          size: 1,
-        }))
-      );
-
-      return id;
-    } catch (e) {
-      console.warn('Failed to add marker:', e);
-      return null;
-    }
-  },
-
-  addHorizontalLine: (price, color, label) => {
-    if (!chartRef.current) return null;
-    try {
-      // lightweight-charts v5: use addSeries(SeriesDefinition, options)
-      const series = chartRef.current.addSeries(LineSeries, {
-        color: color || '#2962FF',
-        lineWidth: 1,
-        lineStyle: 2, // dashed
-        priceLineVisible: false,
-        lastValueVisible: true,
-        title: label || '',
-        crosshairMarkerVisible: false,
-      });
-      const data = dataRef.current;
-      const startTime = data && data.length > 0 ? data[0].time : Math.floor(Date.now() / 1000) - 86400;
-      // Extend far into the future so line stays visible during replay
-      const endTime = startTime + 60 * 60 * 24 * 365 * 10;
-      series.setData([
-        { time: startTime, value: price },
-        { time: endTime, value: price },
-      ]);
-      const id = 'tl_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-      tradeLinesRef.current.set(id, { series, chart: chartRef.current });
-      return id;
-    } catch (e) {
-      console.warn('Failed to add horizontal line:', e);
-      return null;
-    }
-  },
-
-  removeObject: (id, type) => {
-    if (!id) return;
-    if (id.startsWith('tm_') || type === 'marker') {
-      // Remove from the in-memory marker list and refresh the primitive
-      tradeMarkerListRef.current = tradeMarkerListRef.current.filter(m => m.id !== id);
-      if (tradeMarkersPrimitiveRef.current) {
-        const sorted = [...tradeMarkerListRef.current].sort((a, b) => a.time - b.time);
-        try {
-          tradeMarkersPrimitiveRef.current.setMarkers(
-            sorted.map(m => ({
-              time: m.time,
-              position: m.position,
-              shape: m.shape,
-              color: m.color,
-              text: m.text,
-              size: 1,
-            }))
-          );
-        } catch (e) { /* ignore */ }
-      }
-    }
-    if (id.startsWith('tl_') || type === 'line') {
-      const lineInfo = tradeLinesRef.current.get(id);
-      if (lineInfo) {
-        const { series, chart } = lineInfo;
-        try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-        tradeLinesRef.current.delete(id);
-      }
-    }
-    // Fallback: try both if no prefix match
-    if (!id.startsWith('tm_') && !id.startsWith('tl_') && type === undefined) {
-      const lineInfo = tradeLinesRef.current.get(id);
-      if (lineInfo) {
-        const { series, chart } = lineInfo;
-        try { chart.removeSeries(series); } catch (e) { /* ignore */ }
-        tradeLinesRef.current.delete(id);
-      }
-    }
-  },
-    // --- END NEW METHODS ---
-    // ── Trade Setup zone management ──────────────────────────────────────
-    updateTradeZone: (zoneId, fields, positionId, newStatus) => {
-      setCommittedTradeZones(prev =>
-        prev.map(z => {
-          // Match by zone id (exact)
-          if (zoneId && z.id === zoneId) return { ...z, ...(fields ?? {}) };
-          // Match by linked position id — merge both extra fields and new status
-          if (positionId && z.positionId === positionId) {
-            return {
-              ...z,
-              ...(fields ?? {}),
-              ...(newStatus ? { status: newStatus } : {}),
-            };
-          }
-          return z;
-        })
-      );
-    },
-    removeTradeZone: (zoneId) => {
-      setCommittedTradeZones(prev => prev.filter(z => z.id !== zoneId));
-    },
-    removeZoneByPositionId: (positionId) => {
-      setCommittedTradeZones(prev => prev.filter(z => z.positionId !== positionId));
-    },
-    toggleTimer: () => {
-        if (priceScaleTimerRef.current) {
-            const isVisible = priceScaleTimerRef.current.isVisible();
-            priceScaleTimerRef.current.setVisible(!isVisible);
-            if (mainSeriesRef.current) {
-                mainSeriesRef.current.applyOptions({
-                    lastValueVisible: isVisible
-                });
-            }
-            return !isVisible;
-        }
-        return false;
-    },
-    toggleReplay: () => {
-        setIsReplayMode(prev => {
-            const newMode = !prev;
-            if (!prev) {
-                // ── Entering replay ─────────────────────────────────────────
-                fullDataRef.current = [...dataRef.current];
-                const startIndex = Math.max(0, dataRef.current.length - 1);
-                replayIndexRef.current = startIndex;
-
-                // Phase 7: Also initialise the legacy replayFeedRef so that
-                // syncToTimestamp / getReplayBars / exitFollowerReplay (which
-                // access replayFeedRef directly) continue to work unchanged.
-                if (!replayFeedRef.current) {
-                    replayFeedRef.current = new ReplayFeed(fullDataRef.current, symbol);
-                } else {
-                    replayFeedRef.current.setData(fullDataRef.current, symbol);
-                    replayFeedRef.current.reset();
-                }
-
-                // Phase 7: Start the ReplayController — it owns the REPLAY_TICK
-                // and CANDLE subscriptions from this point on.
-                const ctrl = getOrCreateReplayController();
-                ctrl.enter(fullDataRef.current, startIndex);
-
-                // Initial chart update: show data up to startIndex.
-                setTimeout(() => {
-                    updateReplayDataRef.current?.(startIndex, true);
-                }, 0);
-            } else {
-                // ── Exiting replay ──────────────────────────────────────────
-                // Phase 7: Delegate cleanup to ReplayController (also calls onReset
-                // callback which restores full data on the chart series).
-                const ctrl = replayControllerRef.current;
-                if (ctrl) {
-                    ctrl.exit();
-                } else {
-                    // Fallback: inline cleanup (legacy path, should not be reached).
-                    replayStop();
-                    replayIndexRef.current = null;
-                    if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                        dataRef.current = fullDataRef.current;
-                        mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
-                        updateIndicators(fullDataRef.current, indicators);
-                    }
-                }
-
-                setIsSelectingReplayPoint(false);
-                if (fadedSeriesRef.current && chartRef.current) {
-                    try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch (e) { /* ignore */ }
-                    fadedSeriesRef.current = null;
-                }
-            }
-            if (onReplayModeChange) {
-                setTimeout(() => onReplayModeChange(newMode), 0);
-            }
-            return newMode;
-        });
-    },
-    /**
-     * Sync this chart to a given master Unix timestamp (seconds).
-     * Called every ~100 ms by the App replay-sync loop from the master (active) chart.
-     *
-     * For charts on a LOWER timeframe than the master: straightforward slice.
-     * For charts on a HIGHER timeframe: we must reconstruct the currently-forming
-     * HTF bar dynamically from the LTF bars that fall within it, so the candle's
-     * high/low/close updates tick-by-tick exactly as it would in live trading.
-     *
-     * Algorithm:
-     *  1. Take all HTF historical bars whose open_time < current HTF bar open_time
-     *     → these are complete, display as-is.
-     *  2. Identify the current HTF bar: the last historical bar whose open_time
-     *     <= masterTimestamp (but may not yet be "closed" relative to the master clock).
-     *  3. Aggregate all LTF bars within [htfBarOpenTime, masterTimestamp] into a
-     *     single OHLC candle and append it instead of the stored historical bar.
-     *     This gives a live-updating candle identical to what a live feed would produce.
-     *  4. When the master clock moves past the HTF bar's close time, the next HTF bar
-     *     starts and we commit the previous dynamic bar via the historical snapshot
-     *     (which avoids drift from accumulated floating-point rounding).
-     */
-    syncToTimestamp: (masterTimestamp, ltfBarsAtMaster) => {
-        if (!mainSeriesRef.current) return;
-
-        // ── 1. Initialise follower snapshot once ──────────────────────────────
-        if (!followerFullDataRef.current || followerFullDataRef.current.length === 0) {
-            followerFullDataRef.current = dataRef.current ? [...dataRef.current] : [];
-        }
-        const full = followerFullDataRef.current; // HTF historical bars
-        if (full.length === 0) return;
-
-        // Derive this chart's timeframe in seconds from the interval prop
-        const myIntervalSec = intervalToSeconds(interval);
-
-        // ── 2. Find which HTF bar is "current" (open_time <= masterTimestamp) ─
-        let lo = 0, hi = full.length - 1, htfBarIdx = -1;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (full[mid].time <= masterTimestamp) { htfBarIdx = mid; lo = mid + 1; }
-            else { hi = mid - 1; }
-        }
-
-        if (htfBarIdx < 0) {
-            // Master clock is before even the first bar — show nothing
-            if (transformDataRef.current) mainSeriesRef.current.setData([]);
-            if (updateIndicatorsRef.current) updateIndicatorsRef.current([]);
-            return;
-        }
-
-        const currentHTFBar = full[htfBarIdx];
-        const htfBarCloseTime = currentHTFBar.time + myIntervalSec; // exclusive close
-
-        // ── 3. Build the live (dynamic) current HTF candle ───────────────────
-        // Use the LTF bars that the master chart has played through so far.
-        // `ltfBarsAtMaster` is an array of raw OHLC candles from the master
-        // (active) chart — passed in by the App sync loop.
-        let liveBar = null;
-        if (ltfBarsAtMaster && ltfBarsAtMaster.length > 0) {
-            // Filter LTF bars that fall within the current HTF bar's open range
-            const barsInHTF = ltfBarsAtMaster.filter(
-                b => b.time >= currentHTFBar.time && b.time < htfBarCloseTime
-            );
-            if (barsInHTF.length > 0) {
-                liveBar = {
-                    time: currentHTFBar.time, // HTF bar opens at this time
-                    open: barsInHTF[0].open,
-                    high: barsInHTF.reduce((m, b) => b.high > m ? b.high : m, -Infinity),
-                    low:  barsInHTF.reduce((m, b) => b.low < m ? b.low : m, Infinity),
-                    close: barsInHTF[barsInHTF.length - 1].close,
-                };
-            }
-        }
-
-        // Fall back to the stored historical bar if we have no LTF data to build from
-        if (!liveBar) {
-            liveBar = { ...currentHTFBar };
-        }
-
-        // ── 4. Compose the final dataset: past HTF bars + live current bar ───
-        const pastBars = full.slice(0, htfBarIdx); // completed bars before current
-        const displayData = [...pastBars, liveBar];
-
-        if (transformDataRef.current) {
-            mainSeriesRef.current.setData(transformDataRef.current(displayData, chartTypeRef.current));
-        }
-        if (updateIndicatorsRef.current) {
-            updateIndicatorsRef.current(displayData);
-        }
-    },
-    /**
-     * Exit follower replay mode and restore full data.
-     */
-    exitFollowerReplay: () => {
-        const full = followerFullDataRef.current;
-        if (mainSeriesRef.current && full && full.length > 0) {
-            dataRef.current = [...full];
-            if (transformDataRef.current) {
-                mainSeriesRef.current.setData(transformDataRef.current(full, chartTypeRef.current));
-            }
-            if (updateIndicatorsRef.current) {
-                updateIndicatorsRef.current(full);
-            }
-        }
-        followerFullDataRef.current = [];
-    },
-    /** Expose current replay timestamp (seconds) so App can broadcast it */
-    getReplayTimestamp: () => {
-        if (replayIndexRef.current !== null && fullDataRef.current && fullDataRef.current.length > 0) {
-            const idx = Math.min(replayIndexRef.current, fullDataRef.current.length - 1);
-            return fullDataRef.current[idx]?.time ?? null;
-        }
-        return null;
-    },
-    /**
-     * Return all raw OHLC bars from this chart's replay dataset up to and
-     * including the current replay index. Used by follower charts to build
-     * their live HTF candle dynamically.
-     */
-    getReplayBars: () => {
-        if (replayIndexRef.current === null || !fullDataRef.current || fullDataRef.current.length === 0) {
-            return [];
-        }
-        const idx = Math.min(replayIndexRef.current, fullDataRef.current.length - 1);
-        return fullDataRef.current.slice(0, idx + 1);
-    },
-    getIsReplayMode: () => isReplayModeRef.current,
-}));
+    // Imperative handle methods extracted to src/hooks/useChartImperativeHandle.js
+    useChartImperativeHandle(ref, {
+        lineToolManagerRef,
+        chartRef,
+        dataRef,
+        chartContainerRef,
+        mainSeriesRef,
+        tradeMarkerListRef,
+        tradeMarkersPrimitiveRef,
+        tradeLinesRef,
+        fullDataRef,
+        isReplayModeRef,
+        applyDefaultCandlePosition,
+        setCommittedTradeZones,
+        symbol,
+    });
 
     // zoomChart moved to DrawingManager.zoomChart() (Phase 6)
     // ── Drawing sync effects — delegate to DrawingManager (Phase 6) ──────────
@@ -1485,7 +1023,6 @@ useImperativeHandle(ref, () => ({
         }
     }, [chartShowGrid, chartBgColor, chartBullColor, chartBearColor, theme]);
 
-    const runPineIndicatorsRef = useRef(null);
 
     const runPineIndicators = useCallback(async (data) => {
         const renderer = indicatorRendererRef.current;
@@ -1497,7 +1034,7 @@ useImperativeHandle(ref, () => ({
         await renderer.run(data);
     }, []);
 
-    useEffect(() => { runPineIndicatorsRef.current = runPineIndicators; }, [runPineIndicators]);
+    const runPineIndicatorsRef = useLatestRef(runPineIndicators);
 
     useEffect(() => {
         runPineIndicators(dataRef.current);
@@ -1938,323 +1475,26 @@ useImperativeHandle(ref, () => ({
     // Phase 7: handleSliderChange delegates to ReplayController.seek().
     // The controller stops playback, rewinds ExecutionEngine if needed (Phase 8),
     // resets the feed cursor, and notifies the chart via onIndexChange callback.
-    const handleSliderChange = useCallback((index, hideFuture = true) => {
-        if (index >= 0 && index < fullDataRef.current.length) {
-            const ctrl = replayControllerRef.current;
-            if (ctrl) {
-                ctrl.seek(index, hideFuture);
-            } else {
-                // Fallback: legacy inline path (should not normally be reached).
-                if (isPlayingRef.current) replayPause();
-                if (replayFeedRef.current) replayFeedRef.current.reset();
-                replaySeek(index);
-                updateReplayData(index, hideFuture);
-            }
-        }
-    }, [updateReplayData, replayPause, replaySeek]);
-
-    // Phase 7: Playback subscriptions are now owned by ReplayController.
-    // This effect ensures the controller's subscriptions are active while in
-    // replay mode, and released when exiting. The controller was already
-    // started in toggleReplay → getOrCreateReplayController() → controller.enter(),
-    // so here we just need to clean up on exit or when deps change.
-    useEffect(() => {
-        if (!isReplayMode) {
-            // If the controller is active but replay mode was turned off externally,
-            // make sure we don't leave dangling subscriptions.
-            // (Normal exit path goes through toggleReplay → controller.exit() which
-            //  calls _unsubscribe() directly, so this is a safety net only.)
-            return;
-        }
-        // Controller was already started by toggleReplay; nothing to do on enter.
-        // Return cleanup in case isReplayMode flips to false while the effect is live.
-        return () => {
-            // Subscriptions are cleaned up by the controller itself when exit() is called.
-        };
-    }, [isReplayMode, symbol]);
-
-    // Click Handler for Replay Mode - handles direct chart clicks to jump to a position
-    // Uses chart.subscribeClick which provides accurate param.time
-    // This is separate from the "Jump to Bar" (scissors) handler
-    useEffect(() => {
-        if (!chartRef.current || !isReplayMode || isSelectingReplayPoint || isPlaying) return;
-        if (!mainSeriesRef.current) return;
-
-        const handleReplayClick = (param) => {
-            if (!param) return;
-            if (!fullDataRef.current || fullDataRef.current.length === 0) return;
-            // Skip if we're in selecting mode (handled by different handler)
-            if (isSelectingReplayPoint) return;
-            // Skip if we're playing (don't interrupt playback with clicks)
-            if (isPlayingRef.current) return;
-
-            try {
-                let clickedTime = null;
-
-                // Use param.time - this is the most accurate way to get time at click position
-                if (param.time) {
-                    clickedTime = param.time;
-                } else if (param.point) {
-                    // Fallback: use coordinate to get time
-                    const timeScale = chartRef.current.timeScale();
-                    clickedTime = timeScale.coordinateToTime(param.point.x);
-                }
-
-                if (!clickedTime) return;
-
-                // DEBUG: Log the clicked time to verify it's correct
-
-
-                // Find the closest candle in FULL data to the clicked time
-                let clickedIndex = -1;
-                let minDiff = Infinity;
-
-                for (let i = 0; i < fullDataRef.current.length; i++) {
-                    const diff = Math.abs(fullDataRef.current[i].time - clickedTime);
-                    if (diff < minDiff) {
-                        minDiff = diff;
-                        clickedIndex = i;
-                    }
-                }
-
-                // Fallback if no match found
-                if (clickedIndex === -1) {
-                    clickedIndex = fullDataRef.current.length - 1;
-                }
-
-                // Clamp to valid range
-                clickedIndex = Math.max(0, Math.min(clickedIndex, fullDataRef.current.length - 1));
-
-                // DEBUG: Log the found candle time
-
-
-                // Store current visible range BEFORE updating data
-                let currentVisibleRange = null;
-                try {
-                    const timeScale = chartRef.current.timeScale();
-                    currentVisibleRange = timeScale.getVisibleRange();
-                } catch (e) {
-                    // Ignore
-                }
-
-                // Update replay to the clicked position — Phase 7: delegate to controller.
-                const ctrl = replayControllerRef.current;
-                if (ctrl) {
-                    ctrl.seek(clickedIndex, true);
-                } else {
-                    replaySeek(clickedIndex);
-                    replayIndexRef.current = clickedIndex;
-                    updateReplayData(clickedIndex, true);
-                }
-
-                // Restore visible range after data update to prevent view jumping
-                if (currentVisibleRange && chartRef.current) {
-                    setTimeout(() => {
-                        try {
-                            const timeScale = chartRef.current.timeScale();
-                            // Adjust the range to end at the clicked candle if needed
-                            const clickedCandleTime = fullDataRef.current[clickedIndex]?.time;
-                            if (clickedCandleTime && currentVisibleRange.to > clickedCandleTime) {
-                                // The current view extends beyond the clicked time, adjust it
-                                const rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
-                                const newTo = clickedCandleTime;
-                                const newFrom = newTo - rangeWidth;
-                                timeScale.setVisibleRange({ from: newFrom, to: newTo });
-                            } else {
-                                // Keep the current view
-                                timeScale.setVisibleRange(currentVisibleRange);
-                            }
-                        } catch (e) {
-                            // Ignore
-                        }
-                    }, 0);
-                }
-            } catch (e) {
-                console.warn('Error handling replay click:', e);
-            }
-        };
-
-        chartRef.current.subscribeClick(handleReplayClick);
-
-        return () => {
-            if (chartRef.current) {
-                chartRef.current.unsubscribeClick(handleReplayClick);
-            }
-        };
-    }, [isReplayMode, isSelectingReplayPoint, isPlaying, updateReplayData]);
-
-    // Click Handler for "Jump to Bar" - TradingView style
-    useEffect(() => {
-        if (!chartRef.current || !isSelectingReplayPoint) return;
-        if (!mainSeriesRef.current) return;
-
-        // Chart click handler - param.time gives us the exact time at the clicked position
-        const handleChartClick = (param) => {
-            if (!param || !isSelectingReplayPoint) return;
-            if (!fullDataRef.current || fullDataRef.current.length === 0) return;
-
-            try {
-                let clickedTime = null;
-
-                // First try to use param.time (most accurate - exact time at click position)
-                if (param.time) {
-                    clickedTime = param.time;
-                } else if (param.point) {
-                    // Fallback: use coordinate to get time
-                    const timeScale = chartRef.current.timeScale();
-                    const x = param.point.x;
-                    clickedTime = timeScale.coordinateToTime(x);
-                }
-
-                if (!clickedTime) return;
-
-                // Find exact time match first (most accurate)
-                let clickedIndex = fullDataRef.current.findIndex(d => d.time === clickedTime);
-
-                // If no exact match, find the closest candle by time
-                if (clickedIndex === -1) {
-                    let minDiff = Infinity;
-                    fullDataRef.current.forEach((d, i) => {
-                        const diff = Math.abs(d.time - clickedTime);
-                        if (diff < minDiff) {
-                            minDiff = diff;
-                            clickedIndex = i;
-                        }
-                    });
-                }
-
-                // Clamp to valid range
-                clickedIndex = Math.max(0, Math.min(clickedIndex, fullDataRef.current.length - 1));
-
-                if (clickedIndex >= 0 && clickedIndex < fullDataRef.current.length) {
-                    // Store the selected index before updating
-                    const selectedIndex = clickedIndex;
-
-                    // Get current visible range BEFORE updating data to preserve zoom level
-                    let currentVisibleRange = null;
-                    let currentVisibleLogicalRange = null;
-                    try {
-                        const timeScale = chartRef.current.timeScale();
-                        currentVisibleRange = timeScale.getVisibleRange();
-                        currentVisibleLogicalRange = timeScale.getVisibleLogicalRange();
-                    } catch (e) {
-                        // Ignore
-                    }
-
-                    // Calculate the range width in time units to maintain zoom
-                    let rangeWidth = null;
-                    if (currentVisibleRange && currentVisibleRange.from && currentVisibleRange.to) {
-                        rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
-                    }
-
-                    // Phase 7: delegate seek to ReplayController (handles engine rewind too).
-                    const ctrl = replayControllerRef.current;
-                    if (ctrl) {
-                        ctrl.seek(selectedIndex, true);
-                    } else {
-                        replaySeek(selectedIndex);
-                        replayIndexRef.current = selectedIndex;
-                    }
-
-                    // Calculate target visible range BEFORE updating data
-                    const selectedTime = fullDataRef.current[selectedIndex]?.time;
-                    let targetRange = null;
-
-                    if (selectedTime && rangeWidth && rangeWidth > 0) {
-                        // Calculate target range to maintain zoom
-                        const newFrom = selectedTime - rangeWidth / 2;
-                        const newTo = selectedTime + rangeWidth / 2;
-
-                        const firstTime = fullDataRef.current[0]?.time;
-                        const lastAvailableTime = fullDataRef.current[selectedIndex]?.time;
-
-                        if (firstTime && lastAvailableTime) {
-                            let adjustedFrom = Math.max(firstTime, newFrom);
-                            let adjustedTo = Math.min(lastAvailableTime, newTo);
-
-                            // Adjust boundaries while maintaining width
-                            if (adjustedFrom === firstTime && adjustedTo < newTo) {
-                                adjustedTo = Math.min(lastAvailableTime, adjustedFrom + rangeWidth);
-                            } else if (adjustedTo === lastAvailableTime && adjustedFrom > newFrom) {
-                                adjustedFrom = Math.max(firstTime, adjustedTo - rangeWidth);
-                            }
-
-                            if (adjustedTo > adjustedFrom && (adjustedTo - adjustedFrom) >= rangeWidth * 0.3) {
-                                targetRange = { from: adjustedFrom, to: adjustedTo };
-                            }
-                        }
-                    }
-
-                    // If no target range calculated, use a default that doesn't zoom in
-                    if (!targetRange && selectedTime) {
-                        const VIEW_WINDOW = 300;
-                        const startIndex = Math.max(0, selectedIndex - VIEW_WINDOW / 2);
-                        const endIndex = selectedIndex;
-                        const startTime = fullDataRef.current[startIndex]?.time;
-                        const endTime = fullDataRef.current[endIndex]?.time;
-                        if (startTime && endTime) {
-                            targetRange = { from: startTime, to: endTime };
-                        }
-                    }
-
-                    // Update chart series display (controller.seek already notified
-                    // onIndexChange, but we call again with preserveView=false to
-                    // let the range-restore logic below handle zoom).
-                    updateReplayData(selectedIndex, true, false);
-
-                    setIsSelectingReplayPoint(false);
-                    if (chartContainerRef.current) {
-                        chartContainerRef.current.style.cursor = 'default';
-                    }
-
-                    // Immediately set visible range to prevent auto-zoom
-                    // Set multiple times to ensure it sticks
-                    if (targetRange && chartRef.current) {
-                        try {
-                            const timeScale = chartRef.current.timeScale();
-                            // Set immediately
-                            timeScale.setVisibleRange(targetRange);
-
-                            // Set again after a short delay to override any auto-zoom
-                            setTimeout(() => {
-                                if (chartRef.current) {
-                                    try {
-                                        chartRef.current.timeScale().setVisibleRange(targetRange);
-                                    } catch (e) {
-                                        // Ignore
-                                    }
-                                }
-                            }, 10);
-
-                            // Set one more time after data update completes
-                            setTimeout(() => {
-                                if (chartRef.current) {
-                                    try {
-                                        chartRef.current.timeScale().setVisibleRange(targetRange);
-                                    } catch (e) {
-                                        // Ignore
-                                    }
-                                }
-                            }, 100);
-                        } catch (e) {
-                            console.warn('Failed to set visible range after selection:', e);
-                        }
-                    }
-                }
-            } catch (e) {
-                console.warn('Error handling chart click in Jump to Bar:', e);
-            }
-        };
-
-        // Subscribe to chart clicks only (series don't have subscribeClick method)
-        chartRef.current.subscribeClick(handleChartClick);
-
-        return () => {
-            if (chartRef.current) {
-                chartRef.current.unsubscribeClick(handleChartClick);
-            }
-        };
-    }, [isSelectingReplayPoint, updateReplayData]);
+    // Replay binding effects and handleSliderChange extracted to
+    // src/hooks/useChartReplayBinding.js
+    const { handleSliderChange } = useChartReplayBinding({
+        isReplayMode,
+        isSelectingReplayPoint,
+        isPlaying,
+        isPlayingRef,
+        replayIndexRef,
+        replayFeedRef,
+        fullDataRef,
+        chartRef,
+        mainSeriesRef,
+        chartContainerRef,
+        replayControllerRef,
+        replayPause,
+        replaySeek,
+        updateReplayData,
+        setIsSelectingReplayPoint,
+        symbol,
+    });
 
 useEffect(() => {
   return () => {

@@ -251,13 +251,15 @@ export class ExecutionEngine {
   }
 
   closePosition(id, closePrice, closeTime) {
+    const ct = closeTime ?? Math.floor(Date.now() / 1000);
+    const price = closePrice;
+    // Delegate removal + PnL calculation to PositionManager (single code path)
     const pos = this.positionManager.getPosition(id);
     if (!pos) return;
-    // Delegate removal to PositionManager so its internal state stays consistent.
-    // We pass the closed record back only for the event payload — _finaliseClose
-    // handles PnL accounting and EventBus emissions.
-    this.positionManager.positions = this.positionManager.positions.filter(p => p.id !== id);
-    this._finaliseClose(pos, closePrice ?? pos.entryPrice, closeTime ?? Math.floor(Date.now() / 1000), 'manual');
+    const closed = this.positionManager.closePosition(id, price ?? pos.entryPrice, ct, 'manual');
+    if (!closed) return;
+    // Release margin and apply PnL to portfolio, then emit events
+    this._finaliseFromClosed(closed);
   }
 
   // ─── Replay/backtest candle processing ────────────────────────────────────
@@ -303,6 +305,10 @@ export class ExecutionEngine {
   /**
    * Finalise a position close: release margin, apply PnL, push to closedTrades,
    * and emit events. Accepts already-removed pos objects (from PositionManager).
+   *
+   * @deprecated Prefer _finaliseFromClosed when calling after positionManager.closePosition(),
+   *   since PositionManager already builds the closed record and pushes it to closedTrades.
+   *   This path is kept for SL/TP candle/tick triggers that still provide a raw pos + prices.
    */
   _finaliseClose(pos, closePrice, closeTime, reason = 'manual') {
     const pnl = this._calculatePnL(pos, closePrice);
@@ -320,8 +326,29 @@ export class ExecutionEngine {
       pnlPercent:  (pnl / (pos.entryPrice * pos.positionSize)) * 100,
     };
     this.positionManager.closedTrades.push(closed);
+    this._emitCloseEvents(closed, pnl);
+  }
 
-    EventBus.emit(Events.POSITION_CLOSED,  { position: closed, closePrice, closeTime, pnl, reason });
+  /**
+   * Portfolio side-effects and event emission for a close record already built
+   * and pushed to closedTrades by PositionManager.closePosition().
+   * Avoids duplicating the closed record construction.
+   */
+  _finaliseFromClosed(closed) {
+    this.portfolio.releaseMargin(closed.requiredMargin ?? 0);
+    this.portfolio.applyRealisedPnL(closed.pnl);
+    this._emitCloseEvents(closed, closed.pnl);
+  }
+
+  /** Shared event emission for both close paths. */
+  _emitCloseEvents(closed, pnl) {
+    EventBus.emit(Events.POSITION_CLOSED,  {
+      position: closed,
+      closePrice: closed.closePrice,
+      closeTime:  closed.closeTime,
+      pnl,
+      reason: closed.closeReason,
+    });
     EventBus.emit(Events.BALANCE_CHANGED,  {
       balance: this.portfolio.balance,
       equity:  this.portfolio.equity,
@@ -371,18 +398,20 @@ export class ExecutionEngine {
 
   getSnapshot() {
     return {
-      balance:       this.portfolio.balance,
-      equity:        this.portfolio.equity,
-      positions:     this.positionManager.positions.map(p => ({ ...p })),
-      pendingOrders: this.orderManager.orders.map(o => ({ ...o })),
-      closedTrades:  this.positionManager.closedTrades.map(p => ({ ...p })),
+      balance:        this.portfolio.balance,
+      equity:         this.portfolio.equity,
+      reservedMargin: this.portfolio.reservedMargin,
+      positions:      this.positionManager.positions.map(p => ({ ...p })),
+      pendingOrders:  this.orderManager.orders.map(o => ({ ...o })),
+      closedTrades:   this.positionManager.closedTrades.map(p => ({ ...p })),
     };
   }
 
   restoreSnapshot(snap) {
     this.portfolio.restoreSnapshot({
-      balance: snap.balance,
-      equity:  snap.equity,
+      balance:        snap.balance,
+      equity:         snap.equity,
+      reservedMargin: snap.reservedMargin,
     });
     this.positionManager.restoreSnapshot({
       positions:    snap.positions    ?? [],
