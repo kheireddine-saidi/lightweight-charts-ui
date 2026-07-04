@@ -7,7 +7,7 @@ import tseslint from '@typescript-eslint/eslint-plugin'
 import tsparser from '@typescript-eslint/parser'
 
 export default defineConfig([
-  globalIgnores(['dist', 'src/plugins/line-tools/line-tools.js']),
+  globalIgnores(['dist', 'src/plugins/line-tools/line-tools.js', 'scripts/']),
   // JS/JSX files — same as before
   {
     files: ['**/*.{js,jsx}'],
