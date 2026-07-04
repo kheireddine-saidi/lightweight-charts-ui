@@ -32,6 +32,7 @@ import { ReplayFeed } from '../../feeds/ReplayFeed';
 import { ReplayController } from '../../engine/replay/ReplayController';
 import { ChartDataManager } from '../../chart/ChartDataManager';
 import TradeSetupTool from './TradeSetupTool';
+import { PineTableOverlay } from './PineTableOverlay';
 
 // TOOL_MAP moved to DrawingManager.js (Phase 6)
 const TOOL_MAP = DM_TOOL_MAP;
@@ -105,6 +106,10 @@ const ChartComponent = forwardRef(({
 
     // Trade setup tool — committed zones (persist after order is placed)
     const [committedTradeZones, setCommittedTradeZones] = useState([]);
+
+    // Pine table overlay — indicatorId → PineTableObject[]
+    // Updated via the onTables callback from IndicatorRenderer
+    const [pineTables, setPineTables] = useState({});
 
     // ── Replay state — driven by the singleton ReplayEngine via EventBus ──
     const {
@@ -258,7 +263,14 @@ const ChartComponent = forwardRef(({
         chartDataManagerRef.current = mgr;
 
         // ── IndicatorRenderer (Phase 5) ───────────────────────────────────
-        const renderer = new IndicatorRenderer({ indicatorRegistry: indicatorRegistryRef.current });
+        const renderer = new IndicatorRenderer({
+            indicatorRegistry: indicatorRegistryRef.current,
+            onTables: (indicatorId, tables) => {
+                // React state setter is stable — safe to capture in closure
+                setPineTables(prev => ({ ...prev, [indicatorId]: tables }));
+            },
+        });
+        renderer.setMainSeries(mainSeriesRef.current);
         indicatorRendererRef.current = renderer;
 
         // ── DrawingManager (Phase 6) ──────────────────────────────────────
@@ -875,6 +887,7 @@ const ChartComponent = forwardRef(({
         }
         if (indicatorRendererRef.current) {
             indicatorRendererRef.current.setChart(chart);
+            indicatorRendererRef.current.setMainSeries(replacementSeries);
         }
 
         // Re-attach trade markers and timer via SeriesManager helpers (Phase 5)
@@ -1056,6 +1069,8 @@ const ChartComponent = forwardRef(({
         if (!renderer) return;
         // Keep the renderer's chart reference current
         if (chartRef.current) renderer.setChart(chartRef.current);
+        // Keep main series reference current for marker/pool attachment
+        if (mainSeriesRef.current) renderer.setMainSeries(mainSeriesRef.current);
         // Keep IndicatorEngine ref in sync for external callers (e.g. onHistoryLoaded)
         if (renderer._engine) indicatorEngineRef.current = renderer._engine;
         await renderer.run(data);
@@ -1644,6 +1659,9 @@ useEffect(() => {
                     if (onToolUsed) onToolUsed();
                 }}
             />
+
+            {/* Pine table.new() overlay — positioned absolutely in chart corners */}
+            <PineTableOverlay tables={pineTables} />
 
         </div>
     );
