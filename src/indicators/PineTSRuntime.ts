@@ -173,6 +173,8 @@ export interface PineRunResult {
 
   title?:      string;
   error?:      string;
+  /** True when the script declares indicator(..., overlay=true). */
+  overlay:     boolean;
 
   // ── Categorized outputs ──────────────────────────────────────────────────
   lineSeries:    PineSeriesOutput[];       // style_line / style_stepline / style_area / style_circles
@@ -383,6 +385,9 @@ function extractAll(ctx: any): PineRunResult {
       for (const pt of (plot.data ?? []) as any[]) {
         if (!Array.isArray(pt?.value) || pt.value.length < 4) continue;
         const [o, h, l, c] = pt.value;
+        // Filter out warm-up bars where ATR/indicators haven't converged yet
+        if (o == null || h == null || l == null || c == null) continue;
+        if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
         ohlcData.push({
           time:      pt.time as number,
           open:      o, high: h, low: l, close: c,
@@ -428,6 +433,7 @@ function extractAll(ctx: any): PineRunResult {
 
   return {
     series,
+    overlay:   !!(ctx?.indicator?.overlay ?? true),
     lineSeries, histograms, markers, barOverlays,
     hlines, fills,
     lines, boxes, labels, polylines, linefills, tables,
@@ -483,6 +489,7 @@ export class PineTSRuntime {
         series: [], lineSeries: [], histograms: [], markers: [], barOverlays: [],
         hlines: [], fills: [], lines: [], boxes: [], labels: [], polylines: [],
         linefills: [], tables: [],
+        overlay: true,
         error: String(err?.message ?? err),
       };
     }
