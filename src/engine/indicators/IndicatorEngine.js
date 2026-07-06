@@ -229,10 +229,11 @@ export class IndicatorEngine {
   }
 
   /**
-   * Sync Pine indicators. Removes wrappers for disabled/removed indicators
+   * Sync Pine indicators. Removes wrappers for indicators no longer present
    * and creates new ones for new entries.
    *
-   * @param {object[]} indicators  - array of { id, source, params, title, enabled }
+   * @param {object[]} indicators  - array of { id, source, params, title }, already
+   *   filtered by the caller to only the indicators applicable to this chart.
    */
   updatePine(indicators) {
     this._syncPine(indicators);
@@ -283,19 +284,21 @@ export class IndicatorEngine {
   _syncPine(indicators) {
     if (!Array.isArray(indicators)) return;
 
-    const enabledIds = new Set(indicators.filter(i => i.enabled).map(i => i.id));
+    // `indicators` is already filtered by the caller (IndicatorRenderer) to
+    // just the set applicable to this chart — no further enabled/applied
+    // check needed here.
+    const currentIds = new Set(indicators.map(i => i.id));
 
-    // Remove wrappers for indicators no longer present or disabled
+    // Remove wrappers for indicators no longer present
     for (const [id, wrapper] of this._pineWrappers) {
-      if (!enabledIds.has(id)) {
+      if (!currentIds.has(id)) {
         wrapper.destroy();
         this._pineWrappers.delete(id);
       }
     }
 
-    // Create/update wrappers for enabled indicators
+    // Create/update wrappers for the current set
     for (const ind of indicators) {
-      if (!ind.enabled) continue;
       if (this._pineWrappers.has(ind.id)) {
         // Already exists — update data and re-run if source/params changed
         const wrapper = this._pineWrappers.get(ind.id);

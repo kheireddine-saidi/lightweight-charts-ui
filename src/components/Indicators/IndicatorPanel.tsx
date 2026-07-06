@@ -168,11 +168,12 @@ interface IndicatorPanelProps {
 
 const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ onClose, onEditSource }) => {
   const indicators = useWorkspaceStore(s => s.getActiveChart()?.indicators ?? {});
+  const activeChartId = useWorkspaceStore(s => s.activeChartId);
   const toggleActiveChartIndicator = useWorkspaceStore(s => s.toggleActiveChartIndicator);
   const updateChartIndicatorParams = useWorkspaceStore(s => (s as any).updateChartIndicatorParams);
 
   const userInds = useIndicatorStore(s => s.indicators);
-  const { upsert, remove, setEnabled } = useIndicatorStore();
+  const { upsert, remove, toggleForChart } = useIndicatorStore();
 
   const [editingId, setEditingId] = useState<string|null>(null);
   const [editParams, setEditParams] = useState<Record<string,string>>({});
@@ -205,7 +206,10 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ onClose, onEditSource }
 
   /* ── User indicators ── */
   const createNew = () => {
-    const ind = createDefaultIndicator();
+    // Auto-apply to the chart the panel was opened from, so a newly created
+    // script is immediately visible somewhere instead of appearing "off" on
+    // every chart until manually toggled.
+    const ind = createDefaultIndicator(activeChartId);
     upsert(ind);
     if (onEditSource) onEditSource(ind);
     onClose();
@@ -302,7 +306,11 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ onClose, onEditSource }
               <ItemRow $active={isEditing}>
                 <Dot $color={ind.color}/>
                 <ItemName title={ind.title}>{ind.title}</ItemName>
-                <Toggle $on={ind.enabled} onClick={()=>setEnabled(ind.id,!ind.enabled)} title={ind.enabled?'Disable':'Enable'}/>
+                <Toggle
+                  $on={(ind.appliedChartIds ?? []).includes(activeChartId)}
+                  onClick={()=>toggleForChart(ind.id, activeChartId)}
+                  title={(ind.appliedChartIds ?? []).includes(activeChartId) ? 'Remove from this chart' : 'Apply to this chart'}
+                />
                 <IconBtn title="Edit source code" onClick={()=>editSource(ind)}>✏</IconBtn>
                 <IconBtn title="Edit params" onClick={()=>startEditUserParams(ind)}>⚙</IconBtn>
                 <IconBtn title="Delete" style={{color:C.red}} onClick={()=>setConfirmDeleteId(`user:${ind.id}`)}>✕</IconBtn>

@@ -58,6 +58,7 @@ const ChartGrid = ({
                                 }
                             }}
                             feed={feedMap.get(chart.id)}
+                            chartId={chart.id}
                             symbol={chart.symbol}
                             interval={chart.interval}
                             magnetMode={1}

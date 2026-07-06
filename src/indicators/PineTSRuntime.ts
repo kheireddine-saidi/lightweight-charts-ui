@@ -325,9 +325,20 @@ function extractAll(ctx: any): PineRunResult {
 
   for (const [key, plot] of Object.entries(plots) as [string, any][]) {
     if (DRAWING_OBJECT_KEYS.has(key)) continue;
-    if (!plot?.options?.style) continue;
+    if (!plot?.data || !Array.isArray(plot.data)) continue;
 
-    const style = plot.options.style as string;
+    // pinets only sets options.style when the Pine script passes an EXPLICIT
+    // style= argument (e.g. plot(x, style=plot.style_histogram)). A plain
+    // plot(x) call — far and away the most common form, and exactly what a
+    // bare RSI/MA script uses — omits the key entirely even though Pine's
+    // own default for plot() is style_line. Previously this whole entry was
+    // skipped, silently dropping every plain-plot indicator's output (most
+    // visibly on overlay=false/pane indicators, since those tend to plot a
+    // single unstyled series and end up with nothing at all — no series, no
+    // scale). Default to style_line so plain plot() calls render like Pine
+    // actually specifies. hline()/fill()/plotshape()/plotchar()/plotbar()/
+    // plotcandle() all set options.style explicitly, so they're unaffected.
+    const style = (plot?.options?.style as string | undefined) ?? 'style_line';
 
     // ── hline ───────────────────────────────────────────────────────────────
     if (style === 'hline') {
@@ -440,6 +451,128 @@ function extractAll(ctx: any): PineRunResult {
   };
 }
 
+// ─── syminfo / tickerId / timeframe support ───────────────────────────────────
+//
+// pinets only populates ctx.pine.syminfo when the `source` passed to `new
+// PineTS(source, …)` is a market-data Provider (an object with a
+// getSymbolInfo() method) — plain candle arrays (what we've always passed)
+// leave it `undefined` forever. Any script that reads `syminfo.*` directly,
+// or calls request.security()/request.security_lower_tf() (which read
+// syminfo/timeframe internally even for same-symbol requests), then crashes
+// with a raw TypeError reading a property off `undefined`.
+//
+// request.security() is especially easy to hit by accident: even a
+// same-timeframe call spins up a *new* secondary PineTS instance internally
+// (reusing whatever `source` we originally passed), so patching just the
+// primary instance's private field after construction isn't enough — the
+// secondary instance would still be missing it.
+//
+// The fix: wrap our candle array in a tiny Provider so every PineTS instance
+// spawned from it (primary or the secondary ones request.security() creates)
+// resolves a real (if synthetic) syminfo object via getSymbolInfo(), and gets
+// its candles via getMarketData(). We don't have a live multi-symbol/
+// multi-timeframe feed, so getMarketData() just returns our one candle
+// series regardless of what ticker/timeframe was requested — request.security()
+// calls for a *different* symbol or timeframe than the chart's own won't
+// return genuinely resampled/foreign data, but the script runs and renders
+// instead of throwing. That's a documented limitation, not a crash.
+
+interface PineSymInfo {
+  ticker: string; tickerid: string; prefix: string; root: string;
+  description: string; type: string; main_tickerid: string;
+  current_contract: string; isin: string; basecurrency: string;
+  currency: string; timezone: string; country: string; session: string;
+  mintick: number; pointvalue: number;
+  // Remaining ISymbolInfo fields — not meaningful without a real data
+  // provider, filled with neutral defaults so nothing reads `undefined`.
+  employees: number; industry: string; sector: string; shareholders: number;
+  shares_outstanding_float: number; shares_outstanding_total: number;
+  expiration_date: number; volumetype: string; mincontract: number;
+  minmove: number; pricescale: number;
+  recommendations_buy: number; recommendations_buy_strong: number;
+  recommendations_date: number; recommendations_hold: number;
+  recommendations_sell: number; recommendations_sell_strong: number;
+  recommendations_total: number;
+  target_price_average: number; target_price_date: number;
+  target_price_estimates: number; target_price_high: number;
+  target_price_low: number; target_price_median: number;
+}
+
+function buildDefaultSyminfo(symbol: string, prefix = 'BINANCE'): PineSymInfo {
+  const clean = symbol || 'UNKNOWN';
+  const base  = clean.replace(/(USDT|BUSD|USDC|USD)$/, '') || clean;
+  const quote = clean.slice(base.length) || 'USDT';
+  return {
+    ticker: clean,
+    tickerid: `${prefix}:${clean}`,
+    prefix,
+    root: clean,
+    description: clean,
+    type: 'crypto',
+    main_tickerid: `${prefix}:${clean}`,
+    current_contract: '',
+    isin: '',
+    basecurrency: base,
+    currency: quote,
+    timezone: 'Etc/UTC',
+    country: '',
+    session: '24x7',
+    mintick: 0.01,
+    pointvalue: 1,
+    employees: 0, industry: '', sector: '', shareholders: 0,
+    shares_outstanding_float: 0, shares_outstanding_total: 0,
+    expiration_date: 0, volumetype: 'base', mincontract: 0,
+    minmove: 1, pricescale: 100,
+    recommendations_buy: 0, recommendations_buy_strong: 0,
+    recommendations_date: 0, recommendations_hold: 0,
+    recommendations_sell: 0, recommendations_sell_strong: 0,
+    recommendations_total: 0,
+    target_price_average: 0, target_price_date: 0,
+    target_price_estimates: 0, target_price_high: 0,
+    target_price_low: 0, target_price_median: 0,
+  };
+}
+
+function providerConfigure(_config: any): void { /* no-op — no live provider to configure */ }
+
+/** Maps our app's interval strings ("1m","4h","1d",…) to Pine's timeframe format ("1","240","D"). */
+function toPineTimeframe(interval?: string): string {
+  if (!interval) return '1';
+  const trimmed = interval.trim();
+  const m = /^(\d+)\s*([smhdwM])$/.exec(trimmed);
+  if (!m) return trimmed; // assume it's already Pine-format (e.g. "60", "D")
+  const value = parseInt(m[1], 10);
+  switch (m[2]) {
+    case 's': return `${value}S`;
+    case 'm': return `${value}`;
+    case 'h': return `${value * 60}`;
+    case 'd': return value === 1 ? 'D' : `${value}D`;
+    case 'w': return value === 1 ? 'W' : `${value}W`;
+    case 'M': return value === 1 ? 'M' : `${value}M`;
+    default:  return '1';
+  }
+}
+
+/** Minimal market-data Provider so pinets resolves a real syminfo instead of leaving it undefined. */
+class StaticCandleProvider {
+  constructor(private _candles: any[], private _syminfo: PineSymInfo) {}
+  async getMarketData(_tickerId?: string, _timeframe?: string, _limit?: number, _sDate?: number, _eDate?: number) {
+    return this._candles;
+  }
+  async getSymbolInfo(_tickerId?: string) {
+    return this._syminfo;
+  }
+  configure(config: any): void {
+    providerConfigure(config);
+  }
+}
+
+
+export interface PineSymbolInfo {
+  symbol?:   string;
+  interval?: string;
+}
+
 // ─── Runtime class ────────────────────────────────────────────────────────────
 
 type OHLCVCandle = {
@@ -449,9 +582,17 @@ type OHLCVCandle = {
 export class PineTSRuntime {
   private _pine: any = null;
   private _pineCandles: any[] = [];
+  private _symbol: string = '';
+  private _timeframe: string = '1';
 
-  constructor(candles: OHLCVCandle[]) {
+  constructor(candles: OHLCVCandle[], symbolInfo?: PineSymbolInfo) {
+    this._applySymbolInfo(symbolInfo);
     this._update(candles);
+  }
+
+  private _applySymbolInfo(symbolInfo?: PineSymbolInfo) {
+    if (symbolInfo?.symbol)   this._symbol    = symbolInfo.symbol;
+    if (symbolInfo?.interval) this._timeframe = toPineTimeframe(symbolInfo.interval);
   }
 
   private _toPineCandles(candles: OHLCVCandle[]) {
@@ -468,10 +609,14 @@ export class PineTSRuntime {
 
   private _update(candles: OHLCVCandle[]) {
     this._pineCandles = this._toPineCandles(candles);
-    this._pine = new PineTS(this._pineCandles);
+    const tickerId = `BINANCE:${this._symbol || 'UNKNOWN'}`;
+    const syminfo  = buildDefaultSyminfo(this._symbol, 'BINANCE');
+    const provider = new StaticCandleProvider(this._pineCandles, syminfo);
+    this._pine = new PineTS(provider as any, tickerId, this._timeframe);
   }
 
-  updateCandles(candles: OHLCVCandle[]) {
+  updateCandles(candles: OHLCVCandle[], symbolInfo?: PineSymbolInfo) {
+    this._applySymbolInfo(symbolInfo);
     this._update(candles);
   }
 

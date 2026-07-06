@@ -12,7 +12,14 @@ export interface UserIndicator {
   source: string;
   params: Record<string, unknown>;  // keyed by input title name
   parsedInputs: PineInputDef[];     // extracted input declarations
-  enabled: boolean;
+  /**
+   * Chart ids (WorkspaceStore chart.id) this indicator is currently applied
+   * to. Pine indicators are defined once but rendered per-chart — a script
+   * created while chart 2 is active starts out applied only to chart 2, and
+   * each chart independently renders whichever indicators list its id here.
+   * Empty array = defined but not applied anywhere.
+   */
+  appliedChartIds: number[];
   color: string;
 }
 
@@ -29,7 +36,8 @@ interface IndicatorStoreState {
   indicators: UserIndicator[];
   upsert: (ind: UserIndicator) => void;
   remove: (id: string) => void;
-  setEnabled: (id: string, enabled: boolean) => void;
+  /** Toggle whether an indicator is applied to a specific chart. */
+  toggleForChart: (id: string, chartId: number) => void;
 }
 
 export const useIndicatorStore = create<IndicatorStoreState>((set, get) => ({
@@ -46,8 +54,18 @@ export const useIndicatorStore = create<IndicatorStoreState>((set, get) => ({
     save(next);
     set({ indicators: next });
   },
-  setEnabled: (id, enabled) => {
-    const next = get().indicators.map(i => i.id===id ? {...i, enabled} : i);
+  toggleForChart: (id, chartId) => {
+    const next = get().indicators.map(i => {
+      if (i.id !== id) return i;
+      const applied = i.appliedChartIds ?? [];
+      const isApplied = applied.includes(chartId);
+      return {
+        ...i,
+        appliedChartIds: isApplied
+          ? applied.filter(c => c !== chartId)
+          : [...applied, chartId],
+      };
+    });
     save(next);
     set({ indicators: next });
   },
@@ -61,7 +79,7 @@ sma20 = ta.sma(close, 20)
 plot(sma20, "SMA 20", color.blue)
 `;
 
-export function createDefaultIndicator(): UserIndicator {
+export function createDefaultIndicator(chartId?: number): UserIndicator {
   const source = DEFAULT_TEMPLATE;
   return {
     id: `ind_${Date.now()}`,
@@ -69,7 +87,9 @@ export function createDefaultIndicator(): UserIndicator {
     source,
     params: {},
     parsedInputs: parsePineInputs(source),
-    enabled: true,
+    // Auto-apply to the chart it was created from, if given, so it's
+    // immediately visible somewhere without an extra manual toggle step.
+    appliedChartIds: chartId != null ? [chartId] : [],
     color: '#2962ff',
   };
 }

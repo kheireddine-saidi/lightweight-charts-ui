@@ -39,6 +39,7 @@ const TOOL_MAP = DM_TOOL_MAP;
 
 const ChartComponent = forwardRef(({
     feed,          // ← new: must implement IDataFeed
+    chartId = null, // ← WorkspaceStore chart.id; scopes which Pine indicators this instance renders
     symbol,
     interval,
     chartType,
@@ -63,6 +64,10 @@ const ChartComponent = forwardRef(({
     // Fallback to live feed if no feed prop provided (backward compat)
     const activeFeed = feed ?? binanceLiveFeedSingleton;
     const activeFeedRef = useLatestRef(activeFeed);
+    // Always-current symbol/interval, readable from stable-identity callbacks
+    // (e.g. runPineIndicators) without needing them in a dependency array.
+    const symbolRef = useLatestRef(symbol);
+    const intervalRef = useLatestRef(interval);
 
     // ── Magnet mode tracking refs ───────────────────────────────────────────
     // magnetModeRef: always-current copy of the magnetMode prop, readable from
@@ -187,7 +192,7 @@ const ChartComponent = forwardRef(({
                 chartReadyRef.current = true;
 
                 if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(data);
-                if (indicatorRendererRef.current) indicatorRendererRef.current.runWithData(data);
+                if (indicatorRendererRef.current) indicatorRendererRef.current.runWithData(data, symbol, interval);
 
                 if (isInitial) {
                     // Timer setup — only needed once per symbol/interval
@@ -265,6 +270,7 @@ const ChartComponent = forwardRef(({
         // ── IndicatorRenderer (Phase 5) ───────────────────────────────────
         const renderer = new IndicatorRenderer({
             indicatorRegistry: indicatorRegistryRef.current,
+            chartId,
             onTables: (indicatorId, tables) => {
                 // React state setter is stable — safe to capture in closure
                 setPineTables(prev => ({ ...prev, [indicatorId]: tables }));
@@ -1073,7 +1079,7 @@ const ChartComponent = forwardRef(({
         if (mainSeriesRef.current) renderer.setMainSeries(mainSeriesRef.current);
         // Keep IndicatorEngine ref in sync for external callers (e.g. onHistoryLoaded)
         if (renderer._engine) indicatorEngineRef.current = renderer._engine;
-        await renderer.run(data);
+        await renderer.run(data, symbolRef.current, intervalRef.current);
     }, []);
 
     const runPineIndicatorsRef = useLatestRef(runPineIndicators);

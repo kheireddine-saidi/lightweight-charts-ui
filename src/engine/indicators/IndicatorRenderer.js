@@ -63,11 +63,13 @@ export class IndicatorRenderer {
   /**
    * @param {{
    *   indicatorRegistry: object,
+   *   chartId?: number,
    *   onTables?: (indicatorId: string, tables: object[]) => void,
    * }} opts
    */
-  constructor({ indicatorRegistry, onTables = null }) {
+  constructor({ indicatorRegistry, chartId = null, onTables = null }) {
     this._registry      = indicatorRegistry;
+    this._chartId       = chartId;
     this._onTables      = onTables;
     this._pineRuntime   = null;
     this._engine        = null;
@@ -114,19 +116,27 @@ export class IndicatorRenderer {
     this._mainSeries = series;
   }
 
-  async run(data) {
+  async run(data, symbol, interval) {
     const chart = this._chart;
     if (!chart || !data?.length) return;
 
     // ── PineTSRuntime lifecycle ──────────────────────────────────────────
+    const symbolInfo = (symbol || interval) ? { symbol, interval } : undefined;
     if (!this._pineRuntime) {
-      this._pineRuntime = new PineTSRuntime(data);
+      this._pineRuntime = new PineTSRuntime(data, symbolInfo);
     } else {
-      this._pineRuntime.updateCandles(data);
+      this._pineRuntime.updateCandles(data, symbolInfo);
     }
 
     // ── IndicatorEngine sync ─────────────────────────────────────────────
-    const enabledInds = useIndicatorStore.getState().indicators.filter(i => i.enabled);
+    // Pine indicators are applied per-chart (UserIndicator.appliedChartIds),
+    // not globally — a chart only runs the indicators explicitly assigned to
+    // its own chartId, so different charts can show different indicators.
+    const enabledInds = this._chartId == null
+      ? []
+      : useIndicatorStore.getState().indicators.filter(
+          i => (i.appliedChartIds ?? []).includes(this._chartId)
+        );
 
     if (!this._engine) {
       this._engine = new IndicatorEngine(
@@ -188,11 +198,11 @@ export class IndicatorRenderer {
     }
   }
 
-  runWithData(data) {
+  runWithData(data, symbol, interval) {
     if (this._engine) {
       this._engine.runPineWithData(data);
     }
-    return this.run(data);
+    return this.run(data, symbol, interval);
   }
 
   destroy() {
