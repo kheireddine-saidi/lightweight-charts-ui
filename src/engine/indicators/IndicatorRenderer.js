@@ -155,6 +155,7 @@ export class IndicatorRenderer {
 
     for (const [id, _seriesList] of Object.entries(this._pineSeries)) {
       if (!currentIds.has(id)) {
+        // Remove series/primitives first so the pane is empty before removal
         this._removeSeriesForId(id);
         this._removePriceLinesForId(id);
         this._removeMarkersForId(id);
@@ -203,9 +204,8 @@ export class IndicatorRenderer {
       ...Object.keys(this._pineObjectPools),
       ...Object.keys(this._pinePanes),
     ]);
-    // Remove series/primitives first, then panes (panes can only be removed
-    // when empty — series removal happens automatically when chart destroys,
-    // but we still clean our refs to avoid leaks).
+    // Step 1: Remove all series, primitives, and pools first.
+    // Panes must be removed AFTER their series are gone to avoid LWC assertions.
     for (const id of allIds) {
       this._removeSeriesForId(id);
       this._removePriceLinesForId(id);
@@ -213,7 +213,7 @@ export class IndicatorRenderer {
       this._removeFillsForId(id);
       this._removePoolForId(id);
     }
-    // Remove panes after series are gone
+    // Step 2: Remove panes (now empty)
     for (const id of allIds) {
       this._removePaneForId(id);
     }
@@ -248,30 +248,33 @@ export class IndicatorRenderer {
     const newSeries = [];
 
     // ── Pane management for overlay=false indicators ─────────────────────
-    // overlay=true  → pane 0 (main chart), priceScaleId='right'
-    // overlay=false → dedicated sub-pane (index >= 1), priceScaleId='right'
+    // overlay=true  → pane 0 (main chart), addSeries with paneIndex=0
+    // overlay=false → dedicated sub-pane via chart.addPane()
     //
-    // LWC 5: a unique non-'left'/'right' priceScaleId only creates an overlay
-    // scale inside the same pane — NOT a separate sub-pane. To get a real
-    // separate sub-pane we use chart.addPane() and track the pane index.
-    let paneIndex = 0;
-    const priceScaleId = 'right';
+    // LWC 5 API:
+    //   chart.addPane()          → PaneApi (has .paneIndex(), .addSeries())
+    //   pane.addSeries(def,opts) → delegates to chart.addSeries(def,opts,pane.paneIndex())
+    //   chart.removePane(index)  → removes pane by integer index
+    //
+    // We store the PaneApi object and use pane.paneIndex() at call time so the
+    // index is always current (it shifts when other panes are removed).
+
+    let targetPane = null; // null → use chart.addSeries with paneIndex=0
 
     if (result.overlay === false) {
-      // Reuse existing pane if already created for this indicator
       const existing = this._pinePanes[indicatorId];
-      if (existing) {
-        paneIndex = existing.paneIndex;
+      if (existing?.pane) {
+        // Reuse the pane from a previous run of this indicator
+        targetPane = existing.pane;
       } else {
         try {
-          const pane = chart.addPane();
-          // chart.panes() returns all panes in order; the new pane is the last one
-          const allPanes = chart.panes();
-          paneIndex = allPanes.length - 1;
-          this._pinePanes[indicatorId] = { pane, paneIndex };
+          targetPane = chart.addPane();
+          // setPreserveEmptyPane(true) prevents LWC from auto-removing the pane
+          // when series are temporarily absent during teardown/rebuild
+          targetPane.setPreserveEmptyPane?.(true);
+          this._pinePanes[indicatorId] = { pane: targetPane };
         } catch (e) {
-          console.warn('[IndicatorRenderer] addPane failed:', e);
-          paneIndex = 0; // fallback: use main pane
+          console.warn('[IndicatorRenderer] addPane failed, falling back to main pane:', e);
           this._pinePanes[indicatorId] = null;
         }
       }
@@ -281,18 +284,25 @@ export class IndicatorRenderer {
       this._pinePanes[indicatorId] = null;
     }
 
-    // ── 1. Line series (style_line / style_stepline / style_area / style_circles) ──
+    // Helper: add series to the right pane
+    const addSeriesTo = (type, opts) => {
+      if (targetPane) {
+        return targetPane.addSeries(type, opts);
+      }
+      return chart.addSeries(type, { ...opts, priceScaleId: 'right' }, 0);
+    };
+
+    // ── 1. Line series ─────────────────────────────────────────────────────
     for (const s of result.lineSeries ?? []) {
       if (!s.data.length) continue;
       try {
-        const lwcSeries = chart.addSeries(LineSeries, {
-          lineWidth:          s.lineWidth ?? 1,
-          color:              s.color,
-          title:              s.name,
-          priceScaleId,
-          lastValueVisible:   true,
-          priceLineVisible:   false,
-        }, paneIndex);
+        const lwcSeries = addSeriesTo(LineSeries, {
+          lineWidth:        s.lineWidth ?? 1,
+          color:            s.color,
+          title:            s.name,
+          lastValueVisible: true,
+          priceLineVisible: false,
+        });
         lwcSeries.setData(s.data);
         newSeries.push(lwcSeries);
       } catch (e) {
@@ -304,13 +314,12 @@ export class IndicatorRenderer {
     for (const s of result.histograms ?? []) {
       if (!s.data.length) continue;
       try {
-        const lwcSeries = chart.addSeries(HistogramSeries, {
-          color:              s.color,
-          title:              s.name,
-          priceScaleId,
-          lastValueVisible:   true,
-          priceLineVisible:   false,
-        }, paneIndex);
+        const lwcSeries = addSeriesTo(HistogramSeries, {
+          color:            s.color,
+          title:            s.name,
+          lastValueVisible: true,
+          priceLineVisible: false,
+        });
         lwcSeries.setData(s.data);
         newSeries.push(lwcSeries);
       } catch (e) {
@@ -323,11 +332,10 @@ export class IndicatorRenderer {
       if (!overlay.data.length) continue;
       try {
         const SeriesType = overlay.style === 'candle' ? CandlestickSeries : BarSeries;
-        const lwcSeries = chart.addSeries(SeriesType, {
-          priceScaleId,
+        const lwcSeries = addSeriesTo(SeriesType, {
           lastValueVisible: false,
           priceLineVisible: false,
-        }, paneIndex);
+        });
         lwcSeries.setData(overlay.data.map(d => ({
           time:      d.time,
           open:      d.open,
@@ -612,36 +620,26 @@ export class IndicatorRenderer {
     const entry = this._pinePanes[id];
     if (entry?.pane) {
       try {
-        // LWC 5: chart.removePane(paneIndex) removes the pane.
-        // Guard: only remove if chart is still alive and pane index is valid.
-        const allPanes = this._chart?.panes() ?? [];
-        if (entry.paneIndex > 0 && entry.paneIndex < allPanes.length) {
-          this._chart.removePane(entry.paneIndex);
-          // After removal, any stored pane index for other indicators with
-          // higher indices is now stale. Update them by re-querying.
-          this._refreshPaneIndices();
+        // Use the live paneIndex() from the PaneApi — safer than a stored integer
+        // since other pane removals shift indices.
+        const liveIndex = entry.pane.paneIndex?.();
+        if (typeof liveIndex === 'number' && liveIndex > 0) {
+          this._chart?.removePane(liveIndex);
         }
-      } catch { /* chart may already be destroyed */ }
+      } catch { /* chart may already be destroyed or pane already gone */ }
     }
     delete this._pinePanes[id];
   }
 
   /**
-   * After a pane is removed, all higher pane indices shift down by 1.
-   * Re-sync our stored indices against the live chart.panes() order.
+   * After a pane is removed all higher pane indices shift down by 1.
+   * We store PaneApi objects (not integers) so pane.paneIndex() always returns
+   * the current live index — no re-sync needed. This method is kept as a no-op
+   * for callers that previously relied on it.
    */
   _refreshPaneIndices() {
-    const allPanes = this._chart?.panes() ?? [];
-    for (const [id, entry] of Object.entries(this._pinePanes)) {
-      if (!entry?.pane) continue;
-      const liveIndex = allPanes.indexOf(entry.pane);
-      if (liveIndex === -1) {
-        // Pane no longer exists — clean up the record
-        delete this._pinePanes[id];
-      } else {
-        entry.paneIndex = liveIndex;
-      }
-    }
+    // No-op: pane.paneIndex() is computed live by LWC, so stored PaneApi objects
+    // are always authoritative without manual re-sync.
   }
 
   // ─── Private: style helpers ───────────────────────────────────────────────
