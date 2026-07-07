@@ -168,13 +168,34 @@ const TradeSetupTool = ({
 
   // ── container dims ────────────────────────────────────────────────────────
   const [dims, setDims] = useState({ w: 0, h: 0 });
+  // Tracks the last dims we actually committed, so we can bail out of a
+  // ResizeObserver firing that reports the same size. Without this, every
+  // firing (including the automatic one ResizeObserver issues right after
+  // observe(), and any sub-pixel/no-op firings) builds a brand-new {w,h}
+  // object -> setDims never bails via Object.is -> unconditional re-render
+  // -> layout may nudge the observed box -> observer fires again. That
+  // render -> layout -> observe -> render cycle is the cascading update
+  // DevTools was catching at this line.
+  const lastDimsRef = useRef(dims);
+
   useEffect(() => {
     if (!containerRef?.current) return;
-    const ro = new ResizeObserver(([e]) =>
-      setDims({ w: e.contentRect.width, h: e.contentRect.height })
-    );
+
+    const commitDims = (w, h) => {
+      if (lastDimsRef.current.w === w && lastDimsRef.current.h === h) return;
+      const next = { w, h };
+      lastDimsRef.current = next;
+      setDims(next);
+    };
+
+    const ro = new ResizeObserver(([e]) => {
+      commitDims(e.contentRect.width, e.contentRect.height);
+    });
     ro.observe(containerRef.current);
-    setDims({ w: containerRef.current.clientWidth, h: containerRef.current.clientHeight });
+    // No manual initial read here: ResizeObserver already invokes the
+    // callback once, synchronously-scheduled, right after observe() in
+    // every modern browser, so the old manual setDims() below it was a
+    // guaranteed duplicate write on every mount.
     return () => ro.disconnect();
   }, [containerRef]);
 

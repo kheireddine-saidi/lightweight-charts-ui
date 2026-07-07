@@ -95,10 +95,9 @@ export const useTradeMarkers = (chartRefs, activeChartId, charts = []) => {
           );
           const lineId  = addLine(ref, pos.entryPrice, lineColor,
             isPending ? `Limit ${pos.side.toUpperCase()}` : `Entry ${pos.side.toUpperCase()}`);
-          const slLineId = (!isPending && pos.stopLoss)
-            ? addLine(ref, pos.stopLoss, '#ff4444', 'SL') : null;
-          const tpLineId = (!isPending && pos.takeProfit)
-            ? addLine(ref, pos.takeProfit, '#00cc88', 'TP') : null;
+          // SL/TP lines handled by TradePriceLines SVG overlay — not created here
+          const slLineId = null;
+          const tpLineId = null;
 
           drawnRef.current[pos.id][chartId] = {
             markerId, lineId, slLineId, tpLineId,
@@ -114,27 +113,7 @@ export const useTradeMarkers = (chartRefs, activeChartId, charts = []) => {
             existing.drawnEntryPrice = pos.entryPrice;
           }
 
-          // SL line
-          if (pos.stopLoss && !isPending) {
-            if (!existing.slLineId) {
-              existing.slLineId = addLine(ref, pos.stopLoss, '#ff4444', 'SL');
-              existing.drawnSL = pos.stopLoss;
-            } else if (existing.drawnSL !== pos.stopLoss) {
-              updateLine(ref, existing.slLineId, pos.stopLoss);
-              existing.drawnSL = pos.stopLoss;
-            }
-          }
-
-          // TP line
-          if (pos.takeProfit && !isPending) {
-            if (!existing.tpLineId) {
-              existing.tpLineId = addLine(ref, pos.takeProfit, '#00cc88', 'TP');
-              existing.drawnTP = pos.takeProfit;
-            } else if (existing.drawnTP !== pos.takeProfit) {
-              updateLine(ref, existing.tpLineId, pos.takeProfit);
-              existing.drawnTP = pos.takeProfit;
-            }
-          }
+          // SL/TP lines are rendered by TradePriceLines SVG overlay — no chart series needed here
         }
       }
     }

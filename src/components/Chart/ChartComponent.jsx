@@ -32,6 +32,7 @@ import { ReplayFeed } from '../../feeds/ReplayFeed';
 import { ReplayController } from '../../engine/replay/ReplayController';
 import { ChartDataManager } from '../../chart/ChartDataManager';
 import TradeSetupTool from './TradeSetupTool';
+import TradePriceLines from './TradePriceLines';
 import { PineTableOverlay } from './PineTableOverlay';
 
 // TOOL_MAP moved to DrawingManager.js (Phase 6)
@@ -1664,6 +1665,14 @@ useEffect(() => {
                 onCancel={() => {
                     if (onToolUsed) onToolUsed();
                 }}
+            />
+
+            {/* Trade price lines — TradingView-style entry/SL/TP horizontal lines */}
+            <TradePriceLines
+                containerRef={chartContainerRef}
+                chartApi={chartRef.current}
+                seriesApi={mainSeriesRef.current}
+                symbol={symbol}
             />
 
             {/* Pine table.new() overlay — positioned absolutely in chart corners */}
