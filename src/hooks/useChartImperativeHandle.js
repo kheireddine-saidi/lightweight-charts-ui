@@ -269,6 +269,23 @@ export function useChartImperativeHandle(ref, {
     }
   },
 
+  updateHorizontalLine: (id, newPrice) => {
+    if (!id) return;
+    const info = tradeLinesRef.current.get(id);
+    if (!info?.series) return;
+    try {
+      const data = dataRef.current;
+      const startTime = data && data.length > 0 ? data[0].time : Math.floor(Date.now() / 1000) - 86400;
+      const endTime = startTime + 60 * 60 * 24 * 365 * 10;
+      info.series.setData([
+        { time: startTime, value: newPrice },
+        { time: endTime,   value: newPrice },
+      ]);
+    } catch (e) {
+      console.warn('Failed to update horizontal line:', e);
+    }
+  },
+
   removeObject: (id, type) => {
     if (!id) return;
     if (id.startsWith('tm_') || type === 'marker') {
