@@ -9,7 +9,8 @@ const ReplaySlider = ({
   onSliderChange,
   containerRef,
   isSelectingReplayPoint,
-  isPlaying = false
+  isPlaying = false,
+  externalSliderX = null,  // pixel X driven by CROSSHAIR_SYNC from master chart
 }) => {
   const [sliderPosition, setSliderPosition] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
@@ -236,15 +237,20 @@ const ReplaySlider = ({
   // During playback, hide slider since future candles are already hidden by data update
   const showSlider = (isMouseInChart && !isLocked && !isPlaying) || isDragging || isSelectingReplayPoint;
 
+  // For follower charts: when externalSliderX is provided (driven by CROSSHAIR_SYNC),
+  // override the locally tracked position so the line appears at the same timestamp.
+  const effectiveSliderX = externalSliderX !== null ? externalSliderX : sliderPosition;
+  const showExternalSlider = externalSliderX !== null && isSelectingReplayPoint;
+
   // Show fade overlay when:
   // - Slider is visible (following mouse) - to preview what will be hidden
   // - NOT when locked (because future candles are already hidden)
   // - NOT when playing (because future candles are already hidden by data update)
   // - YES when selecting replay point (Jump to Bar mode) - show fade to preview what will be hidden
-  const showFadeOverlay = showSlider && !isLocked && !isPlaying;
+  const showFadeOverlay = (showSlider || showExternalSlider) && !isLocked && !isPlaying;
 
   // Use slider position for the fade overlay
-  const fadePosition = sliderPosition;
+  const fadePosition = effectiveSliderX;
 
   return (
     <>
@@ -260,11 +266,11 @@ const ReplaySlider = ({
       )}
 
       {/* Slider line and handle - only show when mouse in chart and not locked */}
-      {showSlider && (
+      {(showSlider || showExternalSlider) && (
         <div
           ref={sliderRef}
           className={styles.sliderContainer}
-          style={{ left: `${sliderPosition}px` }}
+          style={{ left: `${effectiveSliderX}px` }}
         >
           <div className={styles.sliderLine} />
           <div

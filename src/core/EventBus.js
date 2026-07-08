@@ -85,6 +85,27 @@ export const Events = Object.freeze({
 
   /** Execution settings (risk/slippage/fees/funding) changed. payload: { settings } */
   SETTINGS_CHANGED: 'SETTINGS_CHANGED',
+
+  /**
+   * Global replay mode activated. All charts should enter replay.
+   * payload: { masterChartId, startIndex }
+   */
+  REPLAY_ENTER: 'REPLAY_ENTER',
+
+  /**
+   * Global replay mode deactivated. All charts should exit replay.
+   * payload: {}
+   */
+  REPLAY_EXIT: 'REPLAY_EXIT',
+
+  /**
+   * Crosshair position during "Jump to timestamp" selection mode.
+   * Emitted by the active (master) chart; all other charts should move
+   * their crosshair to the same time so the user sees a synchronised
+   * vertical line across all charts while hovering.
+   * payload: { time: number, price: number | null }
+   */
+  CROSSHAIR_SYNC: 'CROSSHAIR_SYNC',
 });
 
 class EventBusClass {

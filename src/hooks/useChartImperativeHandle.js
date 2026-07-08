@@ -589,5 +589,22 @@ export function useChartImperativeHandle(ref, {
         const ctrl = replayControllerRef.current;
         if (ctrl) ctrl.setSpeed(speed);
     },
+
+    /**
+     * Show full data on a follower chart so the user can see the whole timeline
+     * while selecting a Jump-to timestamp on the master chart.
+     * Called by GlobalReplayControls.handleJumpTo() on all non-master charts.
+     */
+    startFollowerJumpTo: () => {
+        if (!mainSeriesRef.current || !fullDataRef.current || fullDataRef.current.length === 0) return;
+        if (transformDataRef.current) {
+            mainSeriesRef.current.setData(
+                transformDataRef.current(fullDataRef.current, chartTypeRef.current)
+            );
+        }
+        if (updateIndicatorsRef.current) {
+            updateIndicatorsRef.current(fullDataRef.current);
+        }
+    },
     }));
 }

@@ -57,6 +57,8 @@ export function useWorkspaceState() {
   const [editingIndicator, setEditingIndicator] = useState(null); // UserIndicator | null
   const [showDrawingToolbar, setShowDrawingToolbar] = useState(true);
   const [isReplayMode, setIsReplayMode] = useState(false);
+  // Tracks which chart initiated replay so active-chart switches don't break it.
+  const masterChartIdRef = React.useRef(null);
   const [isDrawingsLocked, setIsDrawingsLocked] = useState(false);
   const [isDrawingsHidden, setIsDrawingsHidden] = useState(false);
   const [isTimerVisible, setIsTimerVisible] = useState(false);
@@ -243,10 +245,37 @@ export function useWorkspaceState() {
   };
 
   // ── Replay ────────────────────────────────────────────────────────────────
-  const handleReplayClick = () => chartRefs.current[activeChartId]?.toggleReplay();
+  // Replay is global — one button enters/exits replay on ALL charts simultaneously.
+  // masterChartIdRef tracks which chart started replay so active-chart switches
+  // (clicking a different chart) don't reassign master ownership.
+  const handleReplayClick = () => {
+    const masterId = isReplayMode
+      ? (masterChartIdRef.current ?? activeChartId)
+      : activeChartId;
+    const masterRef = chartRefs.current[masterId];
+    if (!masterRef) return;
 
+    if (isReplayMode) {
+      // Exit: tell master to exit (it cleans up its ReplayController), then broadcast.
+      masterRef.toggleReplay();
+      EventBus.emit(Events.REPLAY_EXIT, {});
+      masterChartIdRef.current = null;
+    } else {
+      // Enter: record master, tell it to toggle, then broadcast to all followers.
+      masterChartIdRef.current = masterId;
+      masterRef.toggleReplay();
+      EventBus.emit(Events.REPLAY_ENTER, { masterChartId: masterId });
+    }
+  };
+
+  // Only the MASTER chart flips the global isReplayMode flag.
+  // Follower charts calling onReplayModeChange are ignored here — they manage
+  // their own local state via the REPLAY_ENTER / REPLAY_EXIT events.
   const handleReplayModeChange = (chartId, isActive) => {
-    if (chartId === activeChartId) setIsReplayMode(isActive);
+    if (chartId === masterChartIdRef.current) {
+      setIsReplayMode(isActive);
+      if (!isActive) masterChartIdRef.current = null;
+    }
   };
 
   // ── Alerts ────────────────────────────────────────────────────────────────
@@ -387,6 +416,7 @@ export function useWorkspaceState() {
     handleFullScreen,
     handleReplayClick,
     handleReplayModeChange,
+    masterChartIdRef,
     handleAlertClick,
     handleSaveAlert,
     handleRemoveAlert,

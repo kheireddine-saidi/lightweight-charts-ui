@@ -1,27 +1,20 @@
 /**
- * GlobalReplayControls — single replay control box rendered once at the ChartGrid level.
+ * GlobalReplayControls — single replay control box, rendered once at ChartGrid level.
  *
- * Issue 3 fix: previously ReplayControls was rendered inside each ChartComponent,
- * producing one control box per chart. Now a single instance lives at the top of the
- * grid and delegates all replay actions to the active chart's imperative handle.
- *
- * "Jump to timestamp" is synchronised across ALL visible charts: when the user
- * selects a new replay point on any chart, every other chart in the grid jumps to
- * the same timestamp via its syncToTimestamp() imperative method.
+ * All replay actions are delegated to the MASTER chart (the one that initiated replay),
+ * not the currently active chart. This means clicking a different chart during replay
+ * doesn't break playback.
  */
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useRef } from 'react';
 import ReplayControls from './ReplayControls';
 import { useReplayEngine } from '../../engine/replay/useReplayEngine';
 import { EventBus, Events } from '../../core/EventBus';
 
-/**
- * @param {{
- *   isReplayMode: boolean;
- *   activeChartId: string | number;
- *   chartRefs: React.MutableRefObject<Record<string|number, any>>;
- * }} props
- */
-const GlobalReplayControls = ({ isReplayMode, activeChartId, chartRefs }) => {
+const GlobalReplayControls = ({
+  isReplayMode,
+  masterChartIdRef,   // ref tracking the chart that initiated replay
+  chartRefs,
+}) => {
   const {
     isPlaying,
     speed: replaySpeed,
@@ -32,108 +25,104 @@ const GlobalReplayControls = ({ isReplayMode, activeChartId, chartRefs }) => {
     stop: replayStop,
   } = useReplayEngine();
 
-  /** Get the imperative handle for the active (master) chart. */
-  const getActiveRef = useCallback(() => {
-    return chartRefs.current?.[activeChartId] ?? null;
-  }, [chartRefs, activeChartId]);
+  // Local ref so callbacks always read the latest value without re-creating
+  const isReplayModeRef = useRef(isReplayMode);
+  useEffect(() => { isReplayModeRef.current = isReplayMode; }, [isReplayMode]);
 
-  /**
-   * Synchronise a timestamp change to ALL charts.
-   * Called after the user selects a new replay point so that every visible
-   * chart jumps to the same position.
-   */
-  const syncAllChartsToTimestamp = useCallback((timestamp) => {
-    if (!chartRefs.current) return;
-    Object.entries(chartRefs.current).forEach(([id, ref]) => {
-      if (!ref) return;
-      const numId = Number(id);
-      if (numId === activeChartId) return; // master already handled by its own handler
-      if (typeof ref.syncToTimestamp === 'function') {
-        const masterRef = getActiveRef();
-        const ltfBars = masterRef && typeof masterRef.getReplayBars === 'function'
-          ? masterRef.getReplayBars()
-          : [];
-        ref.syncToTimestamp(timestamp, ltfBars);
-      }
-    });
-  }, [chartRefs, activeChartId, getActiveRef]);
+  /** Always target the master chart, not the currently active one. */
+  const getMasterRef = useCallback(() => {
+    const id = masterChartIdRef?.current;
+    if (id == null) return null;
+    return chartRefs.current?.[id] ?? null;
+  }, [masterChartIdRef, chartRefs]);
 
-  // Listen for CANDLE events so follower charts stay in sync during playback.
-  // (This mirrors the logic in useReplaySync but is now co-located here.)
+  // Sync follower charts on every CANDLE event during replay
   useEffect(() => {
     if (!isReplayMode) return;
 
     const unsub = EventBus.on(Events.CANDLE, () => {
-      const masterRef = getActiveRef();
-      if (!masterRef) return;
-      const masterTs = typeof masterRef.getReplayTimestamp === 'function'
-        ? masterRef.getReplayTimestamp()
-        : null;
+      const masterId = masterChartIdRef?.current;
+      const masterRef = masterId != null ? chartRefs.current?.[masterId] : null;
+      if (!masterRef || typeof masterRef.getReplayTimestamp !== 'function') return;
+
+      const masterTs = masterRef.getReplayTimestamp();
       if (masterTs === null) return;
-      syncAllChartsToTimestamp(masterTs);
+
+      const ltfBars = typeof masterRef.getReplayBars === 'function'
+        ? masterRef.getReplayBars()
+        : [];
+
+      Object.entries(chartRefs.current).forEach(([id, ref]) => {
+        if (Number(id) !== masterId && ref && typeof ref.syncToTimestamp === 'function') {
+          ref.syncToTimestamp(masterTs, ltfBars);
+        }
+      });
     });
 
     return unsub;
-  }, [isReplayMode, getActiveRef, syncAllChartsToTimestamp]);
+  }, [isReplayMode, masterChartIdRef, chartRefs]);
 
-  // ── Handlers ────────────────────────────────────────────────────────────
+  // ── Action handlers — all target the MASTER chart ──────────────────────
 
   const handlePlayPause = useCallback(() => {
-    const ctrl = getActiveRef()?.replayController;
+    const masterRef = getMasterRef();
+    if (!masterRef) return;
     if (isPlaying) {
-      ctrl ? ctrl.pause() : replayPause();
+      if (typeof masterRef.stepReplay === 'function') {
+        // use the controller's pause via stepReplay's peer
+        const ctrl = masterRef.replayController;
+        ctrl ? ctrl.pause() : replayPause();
+      } else {
+        replayPause();
+      }
     } else {
+      const ctrl = masterRef.replayController;
       ctrl ? ctrl.play() : replayPlay();
     }
-  }, [isPlaying, getActiveRef, replayPlay, replayPause]);
+  }, [isPlaying, getMasterRef, replayPlay, replayPause]);
 
   const handleForward = useCallback(() => {
-    // Delegate step to the active chart's controller
-    const activeRef = getActiveRef();
-    if (activeRef && typeof activeRef.stepReplay === 'function') {
-      activeRef.stepReplay();
+    const masterRef = getMasterRef();
+    if (masterRef && typeof masterRef.stepReplay === 'function') {
+      masterRef.stepReplay();
     } else {
       replayStep();
     }
-  }, [getActiveRef, replayStep]);
+  }, [getMasterRef, replayStep]);
 
   const handleJumpTo = useCallback(() => {
-    // Tell the active chart to enter "selecting replay point" mode.
-    // After the user clicks a bar, the chart calls back which triggers
-    // syncAllChartsToTimestamp via the CANDLE event.
-    const activeRef = getActiveRef();
-    if (activeRef && typeof activeRef.startJumpTo === 'function') {
-      activeRef.startJumpTo();
+    // Enter "Jump to timestamp" selection mode on the master chart
+    const masterRef = getMasterRef();
+    if (masterRef && typeof masterRef.startJumpTo === 'function') {
+      masterRef.startJumpTo();
     }
-  }, [getActiveRef]);
+    // Also tell all follower charts to show full data so the time range is visible
+    const masterId = masterChartIdRef?.current;
+    Object.entries(chartRefs.current ?? {}).forEach(([id, ref]) => {
+      if (Number(id) !== masterId && ref && typeof ref.startFollowerJumpTo === 'function') {
+        ref.startFollowerJumpTo();
+      }
+    });
+  }, [getMasterRef, masterChartIdRef, chartRefs]);
 
   const handleSpeedChange = useCallback((s) => {
-    const activeRef = getActiveRef();
-    if (activeRef && typeof activeRef.setReplaySpeed === 'function') {
-      activeRef.setReplaySpeed(s);
+    const masterRef = getMasterRef();
+    if (masterRef && typeof masterRef.setReplaySpeed === 'function') {
+      masterRef.setReplaySpeed(s);
     } else {
       replaySetSpeed(s);
     }
-  }, [getActiveRef, replaySetSpeed]);
+  }, [getMasterRef, replaySetSpeed]);
 
   const handleClose = useCallback(() => {
-    // Exit replay on the active chart
-    const activeRef = getActiveRef();
-    if (activeRef && typeof activeRef.toggleReplay === 'function') {
-      activeRef.toggleReplay();
+    const masterRef = getMasterRef();
+    if (masterRef && typeof masterRef.toggleReplay === 'function') {
+      masterRef.toggleReplay();
     } else {
       replayStop();
     }
-
-    // Exit follower replay on all other charts
-    if (chartRefs.current) {
-      Object.entries(chartRefs.current).forEach(([id, ref]) => {
-        if (Number(id) !== activeChartId && ref && typeof ref.exitFollowerReplay === 'function') {
-          ref.exitFollowerReplay();
-        }
-      });
-    }
-  }, [getActiveRef, replayStop, chartRefs, activeChartId]);
+    // REPLAY_EXIT broadcast is emitted by handleReplayClick in useWorkspaceState
+  }, [getMasterRef, replayStop]);
 
   if (!isReplayMode) return null;
 

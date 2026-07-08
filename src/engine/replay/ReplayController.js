@@ -102,11 +102,12 @@ export class ReplayController {
     // Capture engine state at entry — used as backward-seek origin.
     this._engineOriginSnapshot = executionEngine.getSnapshot();
 
-    // Load 1-minute background data for tick generation (Issue 2 fix).
-    // enterReplay() is async but non-blocking; ticks fall back to OHLC sequence
-    // until the background data arrives.
-    if (this._interval) {
-      replayTickGenerator.enterReplay(this._symbol, this._interval, fullData).catch(() => {});
+    // Load 1m background data via the injected feed (Fix 1: no direct Binance import).
+    // enterReplay() is async and non-blocking — ticks fall back to OHLC while loading.
+    // Fix 2: only used for tick generation while a candle is open; closed candles
+    //        always keep their HTF OHLCV unchanged (see CANDLE handler below).
+    if (this._interval && this._feed) {
+      replayTickGenerator.enterReplay(this._symbol, this._interval, fullData, this._feed).catch(() => {});
     }
 
     replayEngine.load(fullData, this._symbol, timeline);
@@ -222,21 +223,12 @@ export class ReplayController {
     });
 
     // CANDLE → notify chart to update its series.
-    // Also derive OHLCV from 1m tick data (Issue 2 fix): when the 1m background
-    // data is loaded, patch the closed candle's OHLCV before handing it to the
-    // chart and execution engine so that simulated fills reflect real tick prices.
-    this._unsubCandle = EventBus.on(Events.CANDLE, ({ candle, index, symbol: candleSymbol }) => {
+    // Fix 2: closed candles always use their HTF dataset OHLCV as-is.
+    // The 1m background data (replayTickGenerator) is used ONLY for tick
+    // generation while a candle is still open, never to overwrite a closed bar.
+    this._unsubCandle = EventBus.on(Events.CANDLE, ({ index, symbol: candleSymbol }) => {
       if (!this._active) return;
       if (candleSymbol && this._symbol && candleSymbol !== this._symbol) return;
-
-      // Enrich candle from 1m data if available
-      if (candle && replayTickGenerator.isLoaded && this._fullData) {
-        const enriched = replayTickGenerator.getCandleFromLtf(candle);
-        // Patch the in-memory HTF dataset so downstream consumers see 1m-derived OHLCV
-        if (enriched && enriched !== candle && index >= 0 && index < this._fullData.length) {
-          this._fullData[index] = { ...this._fullData[index], ...enriched };
-        }
-      }
 
       this._index = index;
       this._onIndexChange(index, true, false);

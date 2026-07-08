@@ -136,6 +136,9 @@ const ChartComponent = forwardRef(({
     const isReplayModeRef = useLatestRef(isReplayMode); // Ref to track replay mode in callbacks
 
     const [isSelectingReplayPoint, setIsSelectingReplayPoint] = useState(false);
+    // Pixel X position driven by CROSSHAIR_SYNC from master chart (follower charts only).
+    // null = use local mouse tracking; number = override from sync.
+    const [externalSliderX, setExternalSliderX] = useState(null);
     const fullDataRef = useRef([]); // Store full data for replay
     const followerFullDataRef = useRef([]); // Immutable snapshot for follower sync — never mutated by replay
     const fadedSeriesRef = useRef(null); // Store faded series for future candles
@@ -188,6 +191,48 @@ const ChartComponent = forwardRef(({
                 dataRef.current = data;
 
                 const activeType = chartTypeRef.current;
+
+                // Issue 3 fix: if we are in replay mode (e.g. the user switched
+                // timeframe or ticker on this chart while replay is running globally),
+                // we slice the data to the current replay timestamp so the chart shows
+                // history up to the replayed point and then re-enters follower-replay
+                // synchronised with the other charts.
+                if (isReplayModeRef.current) {
+                    fullDataRef.current = [...data];
+                    // Determine the replay timestamp from the ReplayController if this
+                    // is the master chart, otherwise fall back to replayIndexRef.
+                    const ctrl = replayControllerRef.current;
+                    let replayTs = null;
+                    if (ctrl && ctrl.index !== null && data[ctrl.index]) {
+                        replayTs = data[ctrl.index]?.time ?? null;
+                    } else if (replayIndexRef.current !== null && data[replayIndexRef.current]) {
+                        replayTs = data[replayIndexRef.current]?.time ?? null;
+                    }
+
+                    if (replayTs !== null) {
+                        // Find the index in the new dataset whose time is <= replayTs
+                        let newIdx = data.length - 1;
+                        for (let i = data.length - 1; i >= 0; i--) {
+                            if (data[i].time <= replayTs) { newIdx = i; break; }
+                        }
+                        replayIndexRef.current = newIdx;
+                        const visible = data.slice(0, newIdx + 1);
+                        mainSeriesRef.current.setData(transformData(visible, activeType));
+                    } else {
+                        mainSeriesRef.current.setData(transformData(data, activeType));
+                    }
+                    timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
+                    chartReadyRef.current = true;
+                    if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(data);
+                    if (indicatorRendererRef.current) indicatorRendererRef.current.runWithData(data, symbol, interval);
+                    // Update ReplayController with new full dataset if this is the master
+                    if (ctrl) {
+                        ctrl._fullData = fullDataRef.current;
+                    }
+                    mgr._isInitialLoad = false;
+                    return; // skip normal live-mode post-processing
+                }
+
                 const transformedData = transformData(data, activeType);
                 mainSeriesRef.current.setData(transformedData);
                 timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
@@ -1393,6 +1438,136 @@ const ChartComponent = forwardRef(({
         updateReplayDataRef.current = updateReplayData;
     }, [updateReplayData]);
 
+    // Fix 3: Listen for global REPLAY_ENTER / REPLAY_EXIT events so every chart
+    // enters or exits replay simultaneously.
+    // The master chart (activeChartId) toggles itself via handleReplayClick in
+    // useWorkspaceState; non-master charts react here automatically.
+    useEffect(() => {
+        const unsubEnter = EventBus.on(Events.REPLAY_ENTER, ({ masterChartId }) => {
+            if (chartId !== null && chartId === masterChartId) return; // master already handled
+            if (isReplayModeRef.current) return; // already in replay
+
+            // Defer all state updates out of the current render cycle to avoid
+            // "setState during render" warnings from React.
+            setTimeout(() => {
+                // Capture current data as the full dataset for this follower chart.
+                if (!replayFeedRef.current) {
+                    replayFeedRef.current = new ReplayFeed(dataRef.current, symbol);
+                } else {
+                    replayFeedRef.current.setData(dataRef.current, symbol);
+                    replayFeedRef.current.reset();
+                }
+                fullDataRef.current = [...dataRef.current];
+
+                setIsReplayMode(true);
+                if (onReplayModeChange) onReplayModeChange(true);
+            }, 0);
+        });
+
+        const unsubExit = EventBus.on(Events.REPLAY_EXIT, () => {
+            if (!isReplayModeRef.current) return; // not in replay
+
+            // All charts exit; master handles itself via toggleReplay.
+            const ctrl = replayControllerRef.current;
+            if (ctrl) return; // master chart handles itself
+
+            // Defer to avoid setState-during-render
+            setTimeout(() => {
+                setIsReplayMode(false);
+                setIsSelectingReplayPoint(false);
+                setExternalSliderX(null);
+                if (mainSeriesRef.current && fullDataRef.current.length > 0) {
+                    dataRef.current = fullDataRef.current;
+                    const transformed = transformData(fullDataRef.current, chartTypeRef.current);
+                    mainSeriesRef.current.setData(transformed);
+                    updateIndicatorsRef.current?.(fullDataRef.current, indicators);
+                }
+                if (onReplayModeChange) onReplayModeChange(false);
+            }, 0);
+        });
+
+        return () => { unsubEnter(); unsubExit(); };
+    // chartId and symbol are stable across re-renders; indicators/transform are via refs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [chartId, symbol]);
+
+    // Crosshair sync — active chart emits, all follower charts receive.
+    //
+    // Active chart: every crosshair move emits CROSSHAIR_SYNC with { time, price, isSelecting }.
+    //   • Allows ALL charts to show the same crosshair at all times (issue 5).
+    //   • When isSelecting=true (Jump-to-timestamp mode) follower charts also compute the
+    //     pixel X for their own timeline so the red vertical line appears at the same
+    //     timestamp (issue 4). If the timestamp is outside the chart's visible range the
+    //     pixel will be out-of-bounds and the line won't render (handled by ReplaySlider).
+    //
+    // Follower charts: receive CROSSHAIR_SYNC, move crosshair and update externalSliderX.
+    useEffect(() => {
+        if (!chartRef.current || !mainSeriesRef.current) return;
+
+        if (isActiveChart) {
+            // Emit on every crosshair move
+            const handleEmit = (param) => {
+                if (!param || !param.time) return;
+                let price = null;
+                if (param.seriesPrices && param.seriesPrices.size > 0) {
+                    price = param.seriesPrices.values().next().value;
+                    if (price && typeof price === 'object') {
+                        price = price.close ?? price.value ?? null;
+                    }
+                }
+                EventBus.emit(Events.CROSSHAIR_SYNC, {
+                    time: param.time,
+                    price,
+                    isSelecting: isSelectingReplayPoint,
+                });
+            };
+            chartRef.current.subscribeCrosshairMove(handleEmit);
+            return () => {
+                chartRef.current?.unsubscribeCrosshairMove(handleEmit);
+            };
+        } else {
+            // Receive crosshair sync from active chart
+            const unsub = EventBus.on(Events.CROSSHAIR_SYNC, ({ time, price, isSelecting }) => {
+                if (!chartRef.current || !mainSeriesRef.current) return;
+
+                // Move crosshair to same position (issue 5 — always sync, not just in selection)
+                try {
+                    chartRef.current.setCrosshairPosition(
+                        price ?? 0,
+                        time,
+                        mainSeriesRef.current,
+                    );
+                } catch {
+                    // Throws when time is outside visible range — safe to ignore.
+                }
+
+                // During Jump-to-timestamp selection, also update the red slider line (issue 4).
+                // Convert the master's timestamp to a pixel X coordinate on THIS chart's
+                // timescale. If the time is outside the visible range timeToCoordinate returns
+                // null and we clear the override so the line disappears for this chart.
+                if (isSelecting && isReplayModeRef.current) {
+                    try {
+                        const ts = chartRef.current.timeScale();
+                        const x = ts.timeToCoordinate(time);
+                        // x is null when the time is outside the visible logical range
+                        if (x !== null && Number.isFinite(x) && x >= 0) {
+                            setExternalSliderX(x);
+                        } else {
+                            setExternalSliderX(null);
+                        }
+                    } catch {
+                        setExternalSliderX(null);
+                    }
+                } else if (!isSelecting) {
+                    setExternalSliderX(null);
+                }
+            });
+            return unsub;
+        }
+    // isActiveChart is stable; isSelectingReplayPoint changes are captured via closure refresh
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isActiveChart, isSelectingReplayPoint]);
+
     /**
      * Phase 7: Lazily create (or reconfigure) the ReplayController for this chart.
      * Called from toggleReplay when entering replay mode.
@@ -1624,6 +1799,7 @@ useEffect(() => {
                     containerRef={chartContainerRef}
                     isSelectingReplayPoint={isSelectingReplayPoint}
                     isPlaying={isPlaying}
+                    externalSliderX={isActiveChart ? null : externalSliderX}
                 />
             )}
 

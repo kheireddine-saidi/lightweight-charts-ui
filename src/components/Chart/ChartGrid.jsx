@@ -21,6 +21,7 @@ const ChartGrid = ({
     onAlertTriggered,
     onReplayModeChange,
     isReplayMode = false,
+    masterChartIdRef,
     ...chartProps
 }) => {
     const getGridClass = () => {
@@ -79,7 +80,7 @@ const ChartGrid = ({
             {/* Single global replay control box — rendered once for all charts (Issue 3 fix) */}
             <GlobalReplayControls
                 isReplayMode={isReplayMode}
-                activeChartId={activeChartId}
+                masterChartIdRef={masterChartIdRef}
                 chartRefs={chartRefs}
             />
         </div>

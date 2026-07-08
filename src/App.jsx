@@ -48,6 +48,7 @@ function App() {
     showDrawingToolbar,
     setShowDrawingToolbar,
     isReplayMode,
+    masterChartIdRef,
     isDrawingsLocked,
     isDrawingsHidden,
     isTimerVisible,
@@ -124,6 +125,7 @@ function App() {
             onAlertTriggered={handleChartAlertTriggered}
             onReplayModeChange={handleReplayModeChange}
             isReplayMode={isReplayMode}
+            masterChartIdRef={masterChartIdRef}
             chartType={chartType}
             activeTool={activeTool}
             onToolUsed={handleToolUsed}
