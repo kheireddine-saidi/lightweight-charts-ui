@@ -117,6 +117,10 @@ const TradeSetupTool = ({
           entryPrice: openPos.entryPrice,
           stopLoss: openPos.stopLoss ?? null,
           takeProfit: openPos.takeProfit ?? null,
+          // Sync drawing geometry fields from live engine values so the box
+          // redraws immediately when SL/TP price lines are dragged
+          slPrice: openPos.stopLoss ?? z.slPrice,
+          tpPrice: openPos.takeProfit ?? z.tpPrice,
           fillTime: openPos.filledTime ?? z.fillTime ?? null,
         };
       }
@@ -129,6 +133,8 @@ const TradeSetupTool = ({
           entryPrice: pendingOrd.entryPrice,
           stopLoss: pendingOrd.stopLoss ?? null,
           takeProfit: pendingOrd.takeProfit ?? null,
+          slPrice: pendingOrd.stopLoss ?? z.slPrice,
+          tpPrice: pendingOrd.takeProfit ?? z.tpPrice,
         };
       }
       const closedPos = liveClosed.find((p) => p.id === z.positionId);
@@ -140,6 +146,8 @@ const TradeSetupTool = ({
           entryPrice: closedPos.entryPrice,
           stopLoss: closedPos.stopLoss ?? null,
           takeProfit: closedPos.takeProfit ?? null,
+          slPrice: closedPos.stopLoss ?? z.slPrice,
+          tpPrice: closedPos.takeProfit ?? z.tpPrice,
           fillTime: closedPos.filledTime ?? z.fillTime ?? null,
         };
       }

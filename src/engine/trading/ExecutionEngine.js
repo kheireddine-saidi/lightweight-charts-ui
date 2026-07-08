@@ -144,8 +144,16 @@ export class ExecutionEngine {
     };
 
     if (isLimit) {
-      // Check for immediate fill (order at-or-beyond current market price)
-      const currentPrice = this.orderManager._prevPriceBySymbol[pos.symbol] ?? null;
+      // Check for immediate fill (order at-or-beyond current market price).
+      // FillModel semantics: long limit fills immediately when currentPrice ≤ limitPrice
+      // (market is at or below limit — buyer gets a price as good or better than requested).
+      // Short limit fills immediately when currentPrice ≥ limitPrice (seller gets ≥ limit).
+      // This means a long entry SET ABOVE current market fills immediately at currentPrice.
+      // Use orderManager's prevPrice (updated by matchTick) with portfolio price as fallback
+      const _rawPrice = this.orderManager._prevPriceBySymbol[pos.symbol]
+        ?? this.portfolio.getLastPrice(pos.symbol, 0);
+      const currentPrice = _rawPrice || null;
+
       if (currentPrice !== null) {
         const fillPrice = this._fillModel.checkTickFill(currentPrice, null, pos);
         if (fillPrice !== null) {
@@ -214,7 +222,14 @@ export class ExecutionEngine {
     if (openPos) {
       // Use the portfolio's symbol-scoped last price for TPSL validation.
       const refPrice = this.portfolio.getLastPrice(openPos.symbol, openPos.entryPrice);
-      this.positionManager.updatePosition(id, fields, refPrice);
+      const { position, safeFields } = this.positionManager.updatePosition(id, fields, refPrice);
+      // Emit so tradingStore Zustand syncs and PositionsPanel re-renders
+      if (position) {
+        EventBus.emit(Events.POSITION_UPDATED, { positionId: id, position, ...safeFields });
+      }
+      // _syncFromEngine is triggered via the POSITION_UPDATED listener in tradingStore (added below)
+      // For now, also call it directly to guarantee the Zustand store is updated.
+      this._syncAfterUpdate();
       return;
     }
 
@@ -248,6 +263,20 @@ export class ExecutionEngine {
         });
       }
     }
+
+    // Sync store so pending order SL/TP changes are reflected in PositionsPanel
+    const updatedOrder = this.orderManager.getOrder(id);
+    if (updatedOrder) {
+      EventBus.emit(Events.POSITION_UPDATED, { positionId: id, position: updatedOrder, ...safeFields });
+    }
+    this._syncAfterUpdate();
+  }
+
+  /** Emit a dedicated sync event so tradingStore._syncFromEngine() is called. */
+  _syncAfterUpdate() {
+    // We emit POSITION_UPDATED which tradingStore already listens to for _syncFromEngine.
+    // This guarantees the Zustand store re-renders PositionsPanel after SL/TP edits.
+    EventBus.emit(Events.POSITION_UPDATED, { _sync: true });
   }
 
   closePosition(id, closePrice, closeTime) {

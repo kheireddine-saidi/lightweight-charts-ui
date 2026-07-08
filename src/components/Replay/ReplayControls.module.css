@@ -16,11 +16,16 @@
 .dragHandle {
     padding: 8px 12px;
     border-bottom: 1px solid var(--tv-color-border);
-    cursor: move;
+    cursor: grab;
     display: flex;
     justify-content: center;
     background-color: var(--tv-color-pane-background);
     border-radius: 6px 6px 0 0;
+    user-select: none;
+}
+
+.dragHandle:active {
+    cursor: grabbing;
 }
 
 .title {

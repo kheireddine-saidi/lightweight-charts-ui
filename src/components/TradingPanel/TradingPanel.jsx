@@ -302,6 +302,17 @@ const TradingPanel = ({ currentTime }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slNum, entryPrice, leverage, riskPerTradePercent, sizeOverridden]);
 
+  // ── Fix 2: Sync trade box when SL/TP price lines are dragged on chart ──
+  useEffect(() => {
+    const unsub = EventBus.on(Events.POSITION_UPDATED, ({ stopLoss, takeProfit, entryPrice, limitPrice }) => {
+      if (stopLoss   != null) setStopLoss(String(stopLoss));
+      if (takeProfit != null) setTakeProfit(String(takeProfit));
+      if (entryPrice != null || limitPrice != null)
+        setLimitPrice(String(limitPrice ?? entryPrice));
+    });
+    return unsub;
+  }, []);
+
   // ── Trade Setup Tool sync ──────────────────────────────────────────────
   useEffect(() => {
     if (!tradeSetup.isReady) return;

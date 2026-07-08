@@ -60,6 +60,7 @@ const ChartComponent = forwardRef(({
     isDrawingsLocked = false,
     isDrawingsHidden = false,
     isTimerVisible = false,
+    isActiveChart = true,
 }, ref) => {
 
     // Fallback to live feed if no feed prop provided (backward compat)
@@ -745,8 +746,10 @@ const ChartComponent = forwardRef(({
                 const feed = activeFeedRef.current;
                 if (!feed || typeof feed.loadHistoryBefore !== 'function') return;
 
+                // Fix 4: use symbolRef/intervalRef so pagination always uses the
+                // chart's current symbol/interval, not a stale closure capture.
                 const olderCandles = await feed.loadHistoryBefore(
-                    symbol, interval, endTimeMs, 500, paginationAbortController.signal
+                    symbolRef.current, intervalRef.current, endTimeMs, 500, paginationAbortController.signal
                 );
 
                 if (!olderCandles?.length) {
@@ -1603,8 +1606,8 @@ useEffect(() => {
 
 
 
-            {/* Replay Controls */}
-            {isReplayMode && (
+            {/* Replay Controls — Fix 5: only shown on the active chart, one control box total */}
+            {isReplayMode && isActiveChart && (
                 <ReplayControls
                     isPlaying={isPlaying}
                     speed={replaySpeed}

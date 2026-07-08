@@ -12,6 +12,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useTradingStore } from '../../stores/tradingStore';
 import { useMarketStore  } from '../../stores/marketStore';
+import { EventBus, Events } from '../../core/EventBus';
 
 // ─── colours ─────────────────────────────────────────────────────────────────
 const C = {
@@ -53,11 +54,12 @@ const yToPrice = (y, s) => { try { return s?.coordinateToPrice(y) ?? null; } cat
 
 // ─── PnL ──────────────────────────────────────────────────────────────────────
 // positionSize is passed explicitly so drag ghost can use pre-resize size
-const calcPnL = (pos, exitPrice, overrideSize) => {
+const calcPnL = (pos, exitPrice, overrideSize, basePrice) => {
   if (!pos || exitPrice == null) return null;
   const size = overrideSize ?? pos.positionSize ?? 0.01;
   const dir  = pos.side === 'long' ? 1 : -1;
-  return dir * (exitPrice - pos.entryPrice) * size * (pos.leverage ?? 1);
+  const from = basePrice ?? pos.entryPrice;
+  return dir * (exitPrice - from) * size * (pos.leverage ?? 1);
 };
 const fmt  = (v) => v == null || !Number.isFinite(v) ? '' : (v >= 0 ? '+' : '') + v.toFixed(2);
 const fmtP = (v) => v == null ? '' : Number(v).toFixed(5);
@@ -137,6 +139,16 @@ export default function TradePriceLines({ containerRef, chartApi, seriesApi, sym
           if      (dHandle === 'sl')    updatePosition(dId, { stopLoss:   dp });
           else if (dHandle === 'tp')    updatePosition(dId, { takeProfit: dp });
           else if (dHandle === 'entry') updatePosition(dId, { entryPrice: dp, limitPrice: dp });
+          // Emit POSITION_UPDATED so TradingPanel / tradeSetupStore re-syncs
+          const updatedFields =
+            dHandle === 'sl'    ? { stopLoss:   dp } :
+            dHandle === 'tp'    ? { takeProfit: dp } :
+            /* entry */           { entryPrice: dp, limitPrice: dp };
+          EventBus.emit(Events.POSITION_UPDATED, {
+            positionId: dId,
+            ...updatedFields,
+            position: { ...pos, ...updatedFields },
+          });
         }
       }
       cleanup();
@@ -176,9 +188,10 @@ export default function TradePriceLines({ containerRef, chartApi, seriesApi, sym
   const clipX1 = LEFT_OFFSET - 4;   // slight bleed into toolbar for lines
   const clipX2 = w - RIGHT_MARGIN;
 
+  // Fix 1: Only show trades whose symbol matches this chart's symbol
   const allItems = [
-    ...positions.map(p    => ({ ...p, _kind: 'position' })),
-    ...pendingOrders.map(p => ({ ...p, _kind: 'pending'  })),
+    ...positions.filter(p => p.symbol === symbol).map(p    => ({ ...p, _kind: 'position' })),
+    ...pendingOrders.filter(p => p.symbol === symbol).map(p => ({ ...p, _kind: 'pending'  })),
   ];
 
   const CLIP_ID = 'tpl-clip';
@@ -215,9 +228,12 @@ export default function TradePriceLines({ containerRef, chartApi, seriesApi, sym
         const slY = slPrice != null ? priceToY(slPrice, seriesApi) : null;
         const tpY = tpPrice != null ? priceToY(tpPrice, seriesApi) : null;
 
+        // For open positions PnL is vs live price; for pending orders PnL is projected from entry
         const livePnL = isOpen ? calcPnL(pos, livePrice, pnlSize) : null;
-        const slPnL   = slPrice != null ? calcPnL(pos, slPrice, pnlSize) : null;
-        const tpPnL   = tpPrice != null ? calcPnL(pos, tpPrice, pnlSize) : null;
+        // Fix 3: pending order SL/TP PnL must be relative to entryPrice (limit), not livePrice
+        const pnlBase = isPending ? entryPrice : pos.entryPrice;
+        const slPnL   = slPrice != null ? calcPnL(pos, slPrice, pnlSize, pnlBase) : null;
+        const tpPnL   = tpPrice != null ? calcPnL(pos, tpPrice, pnlSize, pnlBase) : null;
 
         // Colour scheme
         const pendingTheme = isPending;

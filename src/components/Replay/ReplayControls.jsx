@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Play, Pause, SkipForward, Scissors, X, ChevronDown } from 'lucide-react';
 import styles from './ReplayControls.module.css';
 
@@ -14,9 +14,58 @@ const ReplayControls = ({
     const speeds = [0.1, 0.5, 1, 3, 5, 10];
     const [showSpeedMenu, setShowSpeedMenu] = React.useState(false);
 
+    // ── Drag state ────────────────────────────────────────────────────────
+    const containerRef = useRef(null);
+    const dragRef = useRef(null);
+    // position: offset from initial bottom-center anchor; null = use CSS default
+    const [pos, setPos] = useState(null);
+
+    const onDragStart = useCallback((e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const el = containerRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        dragRef.current = {
+            startMouseX: e.clientX,
+            startMouseY: e.clientY,
+            startLeft:   rect.left,
+            startTop:    rect.top,
+        };
+
+        const onMove = (ev) => {
+            if (!dragRef.current) return;
+            const dx = ev.clientX - dragRef.current.startMouseX;
+            const dy = ev.clientY - dragRef.current.startMouseY;
+            const newLeft = dragRef.current.startLeft + dx;
+            const newTop  = dragRef.current.startTop  + dy;
+            setPos({ left: newLeft, top: newTop });
+        };
+
+        const onUp = () => {
+            dragRef.current = null;
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+        };
+
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    }, []);
+
+    // Reset position if component remounts (e.g. replay restarted)
+    useEffect(() => { setPos(null); }, []);
+
+    const style = pos
+        ? { position: 'fixed', left: pos.left, top: pos.top, transform: 'none', bottom: 'auto' }
+        : {};
+
     return (
-        <div className={styles.container}>
-            <div className={styles.dragHandle}>
+        <div className={styles.container} ref={containerRef} style={style}>
+            <div
+                className={styles.dragHandle}
+                onMouseDown={onDragStart}
+                title="Drag to move"
+            >
                 <div className={styles.title}>Replay mode</div>
             </div>
 
