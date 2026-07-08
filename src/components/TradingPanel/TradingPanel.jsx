@@ -249,7 +249,8 @@ const TradingPanel = ({ currentTime }) => {
   }, [currentPrice]);
   const priceUp = prevPrice === null || currentPrice >= prevPrice;
 
-  // Margin calculations
+  // Margin calculations — guard against 0/null price (feed not yet initialised)
+  const hasPriceData   = currentPrice > 0;
   const freeMargin     = Math.max(0, balance - reservedMargin);
   const entryPrice     = orderType === 'limit' && limitPrice ? parseFloat(limitPrice) : currentPrice;
   const quoteSizeNum   = parseFloat(quoteSize) || 0;
@@ -385,8 +386,11 @@ const TradingPanel = ({ currentTime }) => {
   }, [orderType, quoteSizeNum, positionSize, limitPrice, leverage, requiredMargin, freeMargin,
       slNum, tpNum, currentTime, currentPrice, entryPrice, openPosition, pendingZoneId, sizeOverridden, symbol]);
 
+  // Block order placement if the market feed has not yet delivered a real price
+  // (prevents market orders from filling at the default 0 price).
   const cantPlace = !quoteSizeNum || requiredMargin > freeMargin + 0.001
-    || (orderType === 'limit' && !limitPrice);
+    || (orderType === 'limit' && !limitPrice)
+    || (orderType === 'market' && !hasPriceData);
 
   return (
     <Panel>

@@ -1403,6 +1403,7 @@ const ChartComponent = forwardRef(({
         if (!replayControllerRef.current) {
             replayControllerRef.current = new ReplayController({
                 symbol,
+                interval,
                 onIndexChange: (index, hideFuture, preserveView) => {
                     replayIndexRef.current = index;
                     updateReplayDataRef.current?.(index, hideFuture, preserveView);
@@ -1419,11 +1420,14 @@ const ChartComponent = forwardRef(({
                 },
             });
         } else {
-            // Update symbol in case it changed.
+            // Update symbol/interval in case they changed.
             replayControllerRef.current.setSymbol(symbol);
+            if (typeof replayControllerRef.current.setInterval === 'function') {
+                replayControllerRef.current.setInterval(interval);
+            }
         }
         return replayControllerRef.current;
-    }, [symbol, indicators]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [symbol, interval, indicators]); // eslint-disable-line react-hooks/exhaustive-deps
     // Keep the ref current so useChartImperativeHandle can call it without TDZ
     getOrCreateReplayControllerRef.current = getOrCreateReplayController;
 
@@ -1606,36 +1610,8 @@ useEffect(() => {
 
 
 
-            {/* Replay Controls — Fix 5: only shown on the active chart, one control box total */}
-            {isReplayMode && isActiveChart && (
-                <ReplayControls
-                    isPlaying={isPlaying}
-                    speed={replaySpeed}
-                    onPlayPause={handleReplayPlayPause}
-                    onForward={handleReplayForward}
-                    onJumpTo={handleReplayJumpTo}
-                    onSpeedChange={(s) => {
-                        const ctrl = replayControllerRef.current;
-                        ctrl ? ctrl.setSpeed(s) : replaySetSpeed(s);
-                    }}
-                    onClose={() => {
-                        // Phase 7: delegate full exit to controller (handles engine rewind).
-                        const ctrl = replayControllerRef.current;
-                        if (ctrl) {
-                            ctrl.exit();
-                        } else {
-                            replayStop();
-                            if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                                dataRef.current = fullDataRef.current;
-                                mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
-                                updateIndicators(fullDataRef.current, indicators);
-                            }
-                        }
-                        setIsReplayMode(false);
-                        if (onReplayModeChange) onReplayModeChange(false);
-                    }}
-                />
-            )}
+            {/* Replay Controls are now rendered globally in ChartGrid (Issue 3 fix).
+                The single GlobalReplayControls box handles all charts at once. */}
 
             {/* Replay Slider */}
             {isReplayMode && (

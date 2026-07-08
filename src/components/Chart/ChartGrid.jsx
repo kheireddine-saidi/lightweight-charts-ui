@@ -3,6 +3,7 @@ import styles from './ChartGrid.module.css';
 import ChartComponent from './ChartComponent';
 import { ChartErrorBoundary } from './ChartErrorBoundary';
 import { BinanceLiveFeed } from '../../feeds/BinanceLiveFeed';
+import GlobalReplayControls from '../Replay/GlobalReplayControls';
 
 /**
  * ChartGrid — renders 1-4 chart panels in a CSS grid.
@@ -19,6 +20,7 @@ const ChartGrid = ({
     onAlertsSync,
     onAlertTriggered,
     onReplayModeChange,
+    isReplayMode = false,
     ...chartProps
 }) => {
     const getGridClass = () => {
@@ -43,7 +45,7 @@ const ChartGrid = ({
     }, [charts.map((c) => c.id).join(',')]);
 
     return (
-        <div className={`${styles.gridContainer} ${getGridClass()}`}>
+        <div className={`${styles.gridContainer} ${getGridClass()}`} style={{ position: 'relative' }}>
             {charts.map((chart) => (
                 <div
                     key={chart.id}
@@ -73,6 +75,13 @@ const ChartGrid = ({
                     </ChartErrorBoundary>
                 </div>
             ))}
+
+            {/* Single global replay control box — rendered once for all charts (Issue 3 fix) */}
+            <GlobalReplayControls
+                isReplayMode={isReplayMode}
+                activeChartId={activeChartId}
+                chartRefs={chartRefs}
+            />
         </div>
     );
 };

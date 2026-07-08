@@ -182,8 +182,13 @@ export class ExecutionEngine {
         reservedMargin: this.portfolio.reservedMargin,
       });
     } else {
-      // Market order — open immediately
-      const filledOrder = { ...pos, fillPrice: pos.entryPrice, fillTime: pos.entryTime };
+      // Market order — open immediately.
+      // Guard: if entryPrice is 0 or missing, fall back to the last known market price
+      // to prevent fills at the default 0/1.10 placeholder value.
+      const safeEntryPrice = (pos.entryPrice && pos.entryPrice > 0)
+        ? pos.entryPrice
+        : (this.portfolio.getLastPrice(pos.symbol, 0) || pos.entryPrice);
+      const filledOrder = { ...pos, entryPrice: safeEntryPrice, fillPrice: safeEntryPrice, fillTime: pos.entryTime };
       const openedPos   = this.positionManager.openPosition(filledOrder);
       this.portfolio.reserveMargin(openedPos.requiredMargin ?? 0);
       EventBus.emit(Events.ORDER_CREATED,   { order: pos });
@@ -281,11 +286,16 @@ export class ExecutionEngine {
 
   closePosition(id, closePrice, closeTime) {
     const ct = closeTime ?? Math.floor(Date.now() / 1000);
-    const price = closePrice;
-    // Delegate removal + PnL calculation to PositionManager (single code path)
+    // Guard: use last known market price if closePrice is missing/zero,
+    // prevents position closes at the default 1.10 placeholder price.
     const pos = this.positionManager.getPosition(id);
     if (!pos) return;
-    const closed = this.positionManager.closePosition(id, price ?? pos.entryPrice, ct, 'manual');
+    const lastKnown = this.portfolio.getLastPrice(pos.symbol, 0);
+    const price = (closePrice && closePrice > 0)
+      ? closePrice
+      : (lastKnown > 0 ? lastKnown : pos.entryPrice);
+    // Delegate removal + PnL calculation to PositionManager (single code path)
+    const closed = this.positionManager.closePosition(id, price, ct, 'manual');
     if (!closed) return;
     // Release margin and apply PnL to portfolio, then emit events
     this._finaliseFromClosed(closed);

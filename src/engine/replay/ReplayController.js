@@ -24,17 +24,23 @@ import { EventBus, Events } from '../../core/EventBus';
 import { ReplayFeed } from '../../feeds/ReplayFeed';
 import { replayEngine } from './ReplayEngine';
 import { executionEngine } from '../trading/ExecutionEngine';
+import { replayTickGenerator } from './ReplayTickGenerator';
 
 export class ReplayController {
   /**
    * @param {object} opts
    * @param {string}   opts.symbol          Trading symbol for this chart.
+   * @param {string}   [opts.interval]      Chart timeframe, e.g. '1h'. Used to load
+   *                                        background 1m data when interval > 1m.
    * @param {Function} opts.onIndexChange    Called with (index, hideFuture, preserveView).
    * @param {Function} [opts.onReset]        Called on exit so the chart restores full data.
    */
-  constructor({ symbol, onIndexChange, onReset } = {}) {
+  constructor({ symbol, interval, onIndexChange, onReset } = {}) {
     /** @type {string} */
     this._symbol = symbol;
+
+    /** @type {string|null} HTF interval string (e.g. '1h') */
+    this._interval = interval ?? null;
 
     /** @type {Function} */
     this._onIndexChange = onIndexChange ?? (() => {});
@@ -96,6 +102,13 @@ export class ReplayController {
     // Capture engine state at entry — used as backward-seek origin.
     this._engineOriginSnapshot = executionEngine.getSnapshot();
 
+    // Load 1-minute background data for tick generation (Issue 2 fix).
+    // enterReplay() is async but non-blocking; ticks fall back to OHLC sequence
+    // until the background data arrives.
+    if (this._interval) {
+      replayTickGenerator.enterReplay(this._symbol, this._interval, fullData).catch(() => {});
+    }
+
     replayEngine.load(fullData, this._symbol, timeline);
     replayEngine.seek(startIndex);
 
@@ -110,6 +123,7 @@ export class ReplayController {
     this._index = null;
     this._fullData = null;
     this._engineOriginSnapshot = null;
+    replayTickGenerator.reset();
     this._onReset();
   }
 
@@ -176,6 +190,11 @@ export class ReplayController {
     if (this._feed) this._feed._symbol = symbol;
   }
 
+  /** @param {string} interval */
+  setInterval(interval) {
+    this._interval = interval;
+  }
+
   /**
    * Expose the internal ReplayFeed so ChartComponent's imperative methods
    * (syncToTimestamp, getReplayBars, exitFollowerReplay) can access it.
@@ -203,9 +222,22 @@ export class ReplayController {
     });
 
     // CANDLE → notify chart to update its series.
-    this._unsubCandle = EventBus.on(Events.CANDLE, ({ index, symbol: candleSymbol }) => {
+    // Also derive OHLCV from 1m tick data (Issue 2 fix): when the 1m background
+    // data is loaded, patch the closed candle's OHLCV before handing it to the
+    // chart and execution engine so that simulated fills reflect real tick prices.
+    this._unsubCandle = EventBus.on(Events.CANDLE, ({ candle, index, symbol: candleSymbol }) => {
       if (!this._active) return;
       if (candleSymbol && this._symbol && candleSymbol !== this._symbol) return;
+
+      // Enrich candle from 1m data if available
+      if (candle && replayTickGenerator.isLoaded && this._fullData) {
+        const enriched = replayTickGenerator.getCandleFromLtf(candle);
+        // Patch the in-memory HTF dataset so downstream consumers see 1m-derived OHLCV
+        if (enriched && enriched !== candle && index >= 0 && index < this._fullData.length) {
+          this._fullData[index] = { ...this._fullData[index], ...enriched };
+        }
+      }
+
       this._index = index;
       this._onIndexChange(index, true, false);
     });

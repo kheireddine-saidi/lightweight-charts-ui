@@ -547,5 +547,47 @@ export function useChartImperativeHandle(ref, {
         return fullDataRef.current.slice(0, idx + 1);
     },
     getIsReplayMode: () => isReplayModeRef.current,
+
+    /**
+     * Step one candle forward in replay.
+     * Used by GlobalReplayControls so it doesn't need a direct ReplayController ref.
+     */
+    stepReplay: () => {
+        const ctrl = replayControllerRef.current;
+        if (ctrl) ctrl.step();
+    },
+
+    /**
+     * Enter "select replay point" mode (scissors / Jump To).
+     * Mirrors the inline handleReplayJumpTo in ChartComponent.
+     * GlobalReplayControls calls this on the active chart.
+     */
+    startJumpTo: () => {
+        setIsSelectingReplayPoint(true);
+        // Pause playback so the user can click without missing frames
+        if (replayControllerRef.current) {
+            replayControllerRef.current.pause();
+        }
+        // Show all data so the full timeline is selectable
+        if (mainSeriesRef.current && fullDataRef.current && fullDataRef.current.length > 0) {
+            if (transformDataRef.current) {
+                mainSeriesRef.current.setData(
+                    transformDataRef.current(fullDataRef.current, chartTypeRef.current)
+                );
+            }
+            if (updateIndicatorsRef.current) {
+                updateIndicatorsRef.current(fullDataRef.current);
+            }
+        }
+    },
+
+    /**
+     * Set replay playback speed.
+     * Used by GlobalReplayControls so it doesn't need a direct ReplayController ref.
+     */
+    setReplaySpeed: (speed) => {
+        const ctrl = replayControllerRef.current;
+        if (ctrl) ctrl.setSpeed(speed);
+    },
     }));
 }

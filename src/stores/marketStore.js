@@ -48,7 +48,7 @@ export const useMarketStore = create((set, get) => {
 
   return {
     /** Per-symbol price map. Read as: pricesBySymbol[symbol] ?? fallback */
-    pricesBySymbol: { _default: 1.1000 },
+    pricesBySymbol: { _default: 0 },
 
     /** Internal: tracks the symbol most recently updated (for backward-compat getter) */
     _lastSymbol: '_default',
@@ -62,7 +62,7 @@ export const useMarketStore = create((set, get) => {
     get currentPrice() {
       const state = get();
       const sym = state._lastSymbol ?? '_default';
-      return state.pricesBySymbol[sym] ?? 1.1000;
+      return state.pricesBySymbol[sym] ?? 0;
     },
 
     /** Convenience: get price for a specific symbol (returns fallback if not yet seen) */

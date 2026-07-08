@@ -123,6 +123,7 @@ function App() {
             onAlertsSync={handleChartAlertsSync}
             onAlertTriggered={handleChartAlertTriggered}
             onReplayModeChange={handleReplayModeChange}
+            isReplayMode={isReplayMode}
             chartType={chartType}
             activeTool={activeTool}
             onToolUsed={handleToolUsed}
