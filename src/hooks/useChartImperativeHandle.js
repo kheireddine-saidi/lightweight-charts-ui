@@ -54,6 +54,7 @@ export function useChartImperativeHandle(ref, {
     // ── Wiring-gap deps: transform refs ──────────────────────────────────────
     transformDataRef,           // useRef<fn> — ref to transformData (for sync paths)
     updateIndicatorsRef,        // useRef<fn> — ref to updateIndicators (for sync paths)
+    setFullDataForSlider,       // useState setter — mirrors fullDataRef for ReplaySlider re-renders
 }) {
     useImperativeHandle(ref, () => ({
     undo: () => {
@@ -364,62 +365,61 @@ export function useChartImperativeHandle(ref, {
         return false;
     },
     toggleReplay: () => {
-        setIsReplayMode(prev => {
-            const newMode = !prev;
-            if (!prev) {
-                // ── Entering replay ─────────────────────────────────────────
-                fullDataRef.current = [...dataRef.current];
-                const startIndex = Math.max(0, dataRef.current.length - 1);
-                replayIndexRef.current = startIndex;
+        // Read current mode from ref (isReplayModeRef) so we don't need prev in setState.
+        // This avoids calling other setState setters inside the updater function, which
+        // triggers React's "setState during render" warning.
+        const isCurrentlyInReplay = isReplayModeRef.current;
+        const newMode = !isCurrentlyInReplay;
 
-                // Phase 7: Also initialise the legacy replayFeedRef so that
-                // syncToTimestamp / getReplayBars / exitFollowerReplay (which
-                // access replayFeedRef directly) continue to work unchanged.
-                if (!replayFeedRef.current) {
-                    replayFeedRef.current = new ReplayFeed(fullDataRef.current, symbol);
-                } else {
-                    replayFeedRef.current.setData(fullDataRef.current, symbol);
-                    replayFeedRef.current.reset();
-                }
+        if (!isCurrentlyInReplay) {
+            // ── Entering replay ─────────────────────────────────────────────
+            fullDataRef.current = [...dataRef.current];
+            if (setFullDataForSlider) setFullDataForSlider([...fullDataRef.current]);
+            const startIndex = Math.max(0, dataRef.current.length - 1);
+            replayIndexRef.current = startIndex;
 
-                // Phase 7: Start the ReplayController — it owns the REPLAY_TICK
-                // and CANDLE subscriptions from this point on.
-                const ctrl = getOrCreateReplayControllerRef.current?.();
-                ctrl.enter(fullDataRef.current, startIndex);
-
-                // Initial chart update: show data up to startIndex.
-                setTimeout(() => {
-                    updateReplayDataRef.current?.(startIndex, true);
-                }, 0);
+            if (!replayFeedRef.current) {
+                replayFeedRef.current = new ReplayFeed(fullDataRef.current, symbol);
             } else {
-                // ── Exiting replay ──────────────────────────────────────────
-                // Phase 7: Delegate cleanup to ReplayController (also calls onReset
-                // callback which restores full data on the chart series).
-                const ctrl = replayControllerRef.current;
-                if (ctrl) {
-                    ctrl.exit();
-                } else {
-                    // Fallback: inline cleanup (legacy path, should not be reached).
-                    replayStop();
-                    replayIndexRef.current = null;
-                    if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                        dataRef.current = fullDataRef.current;
-                        mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
-                        updateIndicatorsRef.current?.(fullDataRef.current, indicators);
-                    }
-                }
+                replayFeedRef.current.setData(fullDataRef.current, symbol);
+                replayFeedRef.current.reset();
+            }
 
-                setIsSelectingReplayPoint(false);
-                if (fadedSeriesRef.current && chartRef.current) {
-                    try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch { /* ignore */ }
-                    fadedSeriesRef.current = null;
+            const ctrl = getOrCreateReplayControllerRef.current?.();
+            ctrl.enter(fullDataRef.current, startIndex);
+
+            setTimeout(() => {
+                updateReplayDataRef.current?.(startIndex, true);
+            }, 0);
+        } else {
+            // ── Exiting replay ──────────────────────────────────────────────
+            const ctrl = replayControllerRef.current;
+            if (ctrl) {
+                ctrl.exit();
+            } else {
+                replayStop();
+                replayIndexRef.current = null;
+                if (mainSeriesRef.current && fullDataRef.current.length > 0) {
+                    dataRef.current = fullDataRef.current;
+                    mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
+                    updateIndicatorsRef.current?.(fullDataRef.current, indicators);
                 }
             }
-            if (onReplayModeChange) {
-                setTimeout(() => onReplayModeChange(newMode), 0);
+
+            // These are safe to call outside the setState updater
+            setIsSelectingReplayPoint(false);
+            if (fadedSeriesRef.current && chartRef.current) {
+                try { chartRef.current.removeSeries(fadedSeriesRef.current); } catch { /* ignore */ }
+                fadedSeriesRef.current = null;
             }
-            return newMode;
-        });
+        }
+
+        // setIsReplayMode called last, with a plain value (not an updater function),
+        // so no other setState calls happen inside this updater.
+        setIsReplayMode(newMode);
+        if (onReplayModeChange) {
+            setTimeout(() => onReplayModeChange(newMode), 0);
+        }
     },
     /**
      * Sync this chart to a given master Unix timestamp (seconds).

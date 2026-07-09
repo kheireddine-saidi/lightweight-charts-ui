@@ -99,11 +99,16 @@ export const Events = Object.freeze({
   REPLAY_EXIT: 'REPLAY_EXIT',
 
   /**
-   * Crosshair position during "Jump to timestamp" selection mode.
-   * Emitted by the active (master) chart; all other charts should move
-   * their crosshair to the same time so the user sees a synchronised
-   * vertical line across all charts while hovering.
-   * payload: { time: number, price: number | null }
+   * Crosshair position — emitted by whichever chart the mouse is currently over.
+   * Every other chart moves its crosshair to match.
+   *
+   * payload (normal move):
+   *   { time, priceFraction, isSelecting, sourceChartId }
+   *   priceFraction — normalised 0–1 position within the emitting chart's visible
+   *                   price range; receivers map it onto their own range.
+   *
+   * payload (mouse left chart):
+   *   { clear: true, sourceChartId }
    */
   CROSSHAIR_SYNC: 'CROSSHAIR_SYNC',
 });
