@@ -64,7 +64,6 @@ const ChartGrid = ({
                             chartId={chart.id}
                             symbol={chart.symbol}
                             interval={chart.interval}
-                            magnetMode={1}
                             isActiveChart={activeChartId === chart.id}
                             onAlertsSync={onAlertsSync ? (alerts) => onAlertsSync(chart.id, chart.symbol, alerts) : undefined}
                             onAlertTriggered={onAlertTriggered ? (evt) => onAlertTriggered(chart.id, chart.symbol, evt) : undefined}

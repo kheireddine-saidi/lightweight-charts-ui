@@ -1162,6 +1162,49 @@ const ChartComponent = forwardRef(({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userIndicators, symbol, interval, runPineIndicators]);
 
+    // Replay scroll management (issues 2 & 3):
+    //
+    // Problem A — drawing tools scroll the chart:
+    //   setData() triggers auto-scroll to fit content. When a drawing click fires a
+    //   CANDLE event → updateReplayData → setData(), the chart scrolls mid-click and
+    //   the drawn coordinate lands at the wrong position.
+    //   Fix: save/restore the visible range around every setData in replay mode.
+    //   We do NOT disable shiftVisibleRangeOnNewBar globally because that kills
+    //   the new-candle auto-scroll (issue 3).
+    //
+    // Problem B — user drags should lock the view:
+    //   When the user manually drags the chart we stop auto-scrolling to the latest
+    //   bar. When they scroll back to within 1 bar of the right edge we re-enable it.
+    //
+    // Both are handled here with a userPinnedRef + subscribeVisibleLogicalRangeChange.
+    const replayUserPinnedRef = useRef(false);   // true = user dragged away from right edge
+    const replayProgrammaticRef = useRef(false); // true = we are doing a programmatic scroll
+
+    useEffect(() => {
+        if (!chartRef.current || !isReplayMode) {
+            replayUserPinnedRef.current = false;
+            return;
+        }
+
+        const ts = chartRef.current.timeScale();
+
+        const handleRangeChange = () => {
+            if (replayProgrammaticRef.current) return; // ignore our own scrolls
+            // Check if the user has scrolled away from the rightmost bar.
+            // getVisibleLogicalRange().to >= total bars - 1 means right edge is in view.
+            const logicalRange = ts.getVisibleLogicalRange();
+            if (!logicalRange) return;
+            const totalBars = fullDataRef.current?.length ?? 0;
+            const atRightEdge = logicalRange.to >= totalBars - 2;
+            replayUserPinnedRef.current = !atRightEdge;
+        };
+
+        ts.subscribeVisibleLogicalRangeChange(handleRangeChange);
+        return () => {
+            ts.unsubscribeVisibleLogicalRangeChange(handleRangeChange);
+        };
+    }, [isReplayMode]);
+
     // Handle Magnet Mode
     useEffect(() => {
         if (chartRef.current) {
@@ -1401,60 +1444,63 @@ const ChartComponent = forwardRef(({
     const updateReplayData = useCallback((index, hideFeature = true, preserveView = false) => {
         if (!mainSeriesRef.current || !fullDataRef.current || !chartRef.current) return;
 
-        // Clamp index to valid range
         const clampedIndex = Math.max(0, Math.min(index, fullDataRef.current.length - 1));
 
-        // Store current visible range if we need to preserve it
+        // Always snapshot the visible range before setData().
+        // setData() triggers lightweight-charts' "fit content" scroll even for small
+        // updates, which shifts the chart mid-click when using drawing tools and places
+        // the drawn object at the wrong coordinate (the chart has moved under the cursor).
         let currentVisibleRange = null;
-        if (preserveView && chartRef.current) {
-            try {
-                const timeScale = chartRef.current.timeScale();
-                currentVisibleRange = timeScale.getVisibleLogicalRange();
-            } catch {
-                // Ignore errors
-            }
-        }
+        try {
+            currentVisibleRange = chartRef.current.timeScale().getVisibleLogicalRange();
+        } catch { /* ignore */ }
 
         const pastData = fullDataRef.current.slice(0, clampedIndex + 1);
 
         if (hideFeature) {
-            // Hide future candles - show only past data
             dataRef.current = pastData;
-            const transformedData = transformData(pastData, chartTypeRef.current);
-            mainSeriesRef.current.setData(transformedData);
+            mainSeriesRef.current.setData(transformData(pastData, chartTypeRef.current));
         } else {
-            // Show all candles (for preview mode)
             dataRef.current = fullDataRef.current;
-            const transformedData = transformData(fullDataRef.current, chartTypeRef.current);
-            mainSeriesRef.current.setData(transformedData);
+            mainSeriesRef.current.setData(transformData(fullDataRef.current, chartTypeRef.current));
         }
 
-        // Update indicators only with past data
         updateIndicators(pastData, indicators);
         updateAxisLabel();
 
-        // Update timer with latest candle data from replay to ensure correct color
         if (priceScaleTimerRef.current && pastData.length > 0) {
             const lastCandle = pastData[pastData.length - 1];
-            if (lastCandle && lastCandle.open !== undefined && lastCandle.close !== undefined) {
+            if (lastCandle?.open !== undefined && lastCandle?.close !== undefined) {
                 priceScaleTimerRef.current.updateCandleData(lastCandle.open, lastCandle.close);
             }
         }
 
-        // Update ref to keep in sync
         replayIndexRef.current = clampedIndex;
 
-        // Restore visible range if we're preserving the view
-        if (preserveView && currentVisibleRange && chartRef.current) {
+        // Restore visible range after setData() to prevent the fit-content scroll.
+        // Then, if the user has NOT manually panned away (replayUserPinnedRef=false),
+        // scroll to keep the latest replay bar near the right edge — this is the
+        // "auto-scroll for new candles" behaviour (issue 3).
+        setTimeout(() => {
+            if (!chartRef.current) return;
+            const ts = chartRef.current.timeScale();
+            replayProgrammaticRef.current = true;
             try {
-                setTimeout(() => {
-                    const timeScale = chartRef.current.timeScale();
-                    timeScale.setVisibleLogicalRange(currentVisibleRange);
-                }, 0);
-            } catch {
-                // Ignore errors
-            }
-        }
+                if (preserveView || replayUserPinnedRef.current) {
+                    // User has panned away or caller wants to preserve view — restore exactly.
+                    if (currentVisibleRange) ts.setVisibleLogicalRange(currentVisibleRange);
+                } else {
+                    // Auto-scroll: keep the latest bar visible near the right edge.
+                    // Restore the range width but shift it to show the new bar.
+                    if (currentVisibleRange) {
+                        const rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
+                        const newTo = clampedIndex + 10; // small right padding
+                        ts.setVisibleLogicalRange({ from: newTo - rangeWidth, to: newTo });
+                    }
+                }
+            } catch { /* ignore */ }
+            replayProgrammaticRef.current = false;
+        }, 0);
     }, []);
 
     // Store updateReplayData in ref so it can be accessed from useImperativeHandle
@@ -1527,17 +1573,38 @@ const ChartComponent = forwardRef(({
     // isSuppressingReceive prevents the feedback loop where setCrosshairPosition
     // fires the subscriber's own crosshairMove callback.
     useEffect(() => {
-        let isSuppressingReceive = false;
+        // Only the chart the mouse is physically over should emit CROSSHAIR_SYNC.
+        // lightweight-charts fires crosshairMoved on ALL charts (idle timer fires
+        // everywhere), so without this guard every chart would emit after ~0.5s
+        // and override each other's crosshair positions.
+        let isMouseOver = false;
+
+        const onMouseEnter = () => { isMouseOver = true; };
+        const onMouseLeave = () => {
+            isMouseOver = false;
+            // Clear crosshair on all other charts when mouse leaves this one
+            EventBus.emit(Events.CROSSHAIR_SYNC, { clear: true, sourceChartId: chartId });
+        };
+
+        const container = chartContainerRef.current;
+        if (container) {
+            container.addEventListener('mouseenter', onMouseEnter);
+            container.addEventListener('mouseleave', onMouseLeave);
+        }
 
         const handleEmit = (param) => {
-            if (isSuppressingReceive) return;
+            // Only emit if the mouse is genuinely over this chart's container.
+            if (!isMouseOver) return;
+            // Suppress emit for a window after receiving a sync event — prevents the
+            // library's idle timer from re-broadcasting a clamped position.
+            if (Date.now() - lastReceivedAt < RECEIVE_SUPPRESS_MS) return;
+
             if (!param || !param.time) {
                 EventBus.emit(Events.CROSSHAIR_SYNC, { clear: true, sourceChartId: chartId });
                 return;
             }
 
-            // Always use the raw cursor Y position converted to price — never the
-            // snapped bar price — so the horizontal line follows the exact mouse position.
+            // Get the exact cursor price from the raw pixel Y.
             let price = null;
             if (param.point && mainSeriesRef.current) {
                 try {
@@ -1553,40 +1620,42 @@ const ChartComponent = forwardRef(({
             });
         };
 
+        // Timestamp of the last received sync event. handleEmit suppresses itself
+        // for a short window after receiving to prevent the library's idle timer
+        // from re-broadcasting the clamped position back to other charts.
+        let lastReceivedAt = 0;
+        const RECEIVE_SUPPRESS_MS = 1000; // longer than the library's idle timer (~500ms)
+
         const handleReceive = ({ clear, time, price, isSelecting, sourceChartId }) => {
             if (sourceChartId === chartId) return;
             if (!chartRef.current || !mainSeriesRef.current) return;
 
             if (clear) {
-                chartRef.current.clearCrosshairPosition();
+                try { chartRef.current.clearCrosshairPosition(); } catch { /* ignore */ }
                 setExternalSliderX(null);
                 return;
             }
 
             if (price == null || !Number.isFinite(price)) return;
 
-            // Check whether `time` falls within this chart's visible time range.
-            // timeToCoordinate() returns null when the time is outside the visible
-            // window. In that case we clear the crosshair rather than calling
-            // setCrosshairPosition, which would otherwise snap the vertical line to
-            // the nearest visible bar and corrupt the emitting chart's crosshair via
-            // the feedback path.
-            let timeX = null;
+            // Record receive time so handleEmit stays silent for RECEIVE_SUPPRESS_MS.
+            // This prevents the idle-timer crosshairMoved from re-broadcasting after
+            // we call setCrosshairPosition (which updates the library's saved origin).
+            lastReceivedAt = Date.now();
+
+            // Clamp time to the visible range so the vertical line lands within view.
+            let clampedTime = time;
             try {
-                timeX = chartRef.current.timeScale().timeToCoordinate(time);
+                const visibleRange = chartRef.current.timeScale().getVisibleRange();
+                if (visibleRange) {
+                    if (time < visibleRange.from) clampedTime = visibleRange.from;
+                    else if (time > visibleRange.to) clampedTime = visibleRange.to;
+                }
             } catch { /* timeScale not ready */ }
 
-            isSuppressingReceive = true;
-            if (timeX !== null && Number.isFinite(timeX)) {
-                try {
-                    chartRef.current.setCrosshairPosition(price, time, mainSeriesRef.current);
-                } catch { /* ignore */ }
-            } else {
-                // Time is outside this chart's visible range — hide the crosshair
-                // instead of snapping it to the boundary.
-                try { chartRef.current.clearCrosshairPosition(); } catch { /* ignore */ }
-            }
-            isSuppressingReceive = false;
+            try {
+                chartRef.current.setCrosshairPosition(price, clampedTime, mainSeriesRef.current);
+            } catch { /* ignore */ }
 
             // Drive the red slider line during Jump-to-timestamp selection
             if (isSelecting && isReplayModeRef.current) {
@@ -1607,6 +1676,10 @@ const ChartComponent = forwardRef(({
         return () => {
             chartRef.current?.unsubscribeCrosshairMove(handleEmit);
             unsubReceive();
+            if (container) {
+                container.removeEventListener('mouseenter', onMouseEnter);
+                container.removeEventListener('mouseleave', onMouseLeave);
+            }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isSelectingReplayPoint]);
