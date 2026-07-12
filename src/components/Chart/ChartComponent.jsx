@@ -94,6 +94,10 @@ const ChartComponent = forwardRef(({
     const indicatorRendererRef = useRef(null);
     // DrawingManager — owns LineToolManager + PriceScaleTimer + zoom (Phase 6)
     const drawingManagerRef = useRef(null);
+    // Persistent snapshot of drawing coordinates in { time, price } form.
+    // Updated before every data reload and used to re-anchor drawings after
+    // both initial loads and pagination (which shifts all logical bar indices).
+    const drawingSnapshotRef = useRef([]);
     // TradeVisualizationManager — pure projection of engine state to chart drawings (Phase 5.3)
     const tradeVisualizationManagerRef = useRef(null);
     const chartReadyRef = useRef(false); // Track when chart is fully stable and ready for indicator additions
@@ -255,10 +259,29 @@ const ChartComponent = forwardRef(({
                     return; // skip normal live-mode post-processing
                 }
 
+                // Snapshot drawing coordinates BEFORE setData() shifts all logical
+                // indices. We use the existing drawingSnapshotRef which holds { time, price }
+                // pairs — stable across any number of data reloads.
+                // Doing this synchronously (no RAF) means drawings never visibly shift.
+                const drawingDm = drawingManagerRef.current;
+                const preSnapshot = (drawingDm && drawingSnapshotRef.current.length > 0)
+                    ? drawingSnapshotRef.current
+                    : null;
+
                 const transformedData = transformData(data, activeType);
                 mainSeriesRef.current.setData(transformedData);
                 timeIndexMapRef.current = new Map(data.map((d, i) => [d.time, i]));
                 chartReadyRef.current = true;
+
+                // On INITIAL load (full dataset replace, not prepend), stamp all
+                // tool points into the logical→time map while data and logical are in sync.
+                // On PAGINATION (prepend), we deliberately do NOT re-stamp — the existing
+                // map entries (staleLogical→originalTime) are exactly what the
+                // logicalToCoordinate wrapper needs to remap correctly.
+                if (isInitial && drawingDm?._stampAllTools) {
+                    drawingDm._stampAllTools();
+                }
+                mgr._pendingDrawingSnapshot = null;
 
                 if (runPineIndicatorsRef.current) runPineIndicatorsRef.current(data);
                 if (indicatorRendererRef.current) indicatorRendererRef.current.runWithData(data, symbol, interval);
@@ -358,6 +381,12 @@ const ChartComponent = forwardRef(({
             onToolUsed:           onToolUsed ?? null,
             onAlertsSync:         onAlertsSync ?? null,
             onAlertTriggered:     onAlertTriggered ?? null,
+            onDrawingChanged: () => {
+                const currentDm = drawingManagerRef.current;
+                if (currentDm) {
+                    drawingSnapshotRef.current = currentDm.extractDrawingState(dataRef.current);
+                }
+            },
         });
         drawingManagerRef.current = dm;
 
@@ -1053,6 +1082,10 @@ const ChartComponent = forwardRef(({
         const mgr = chartDataManagerRef.current;
         if (!mgr) return;
 
+        // The logical→time map in DrawingManager is NOT rebuilt here.
+        // It retains stale-logical→time entries which are exactly what we need
+        // for the logicalToCoordinate wrapper to remap after a data reload.
+
         // Store zoom so the onHistoryLoaded callback can retrieve it
         mgr._preservedCandleWindow = preservedCandleWindow;
         // Signal that the next onHistoryLoaded call is the initial load (not pagination)
@@ -1162,40 +1195,44 @@ const ChartComponent = forwardRef(({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userIndicators, symbol, interval, runPineIndicators]);
 
-    // Replay scroll management (issues 2 & 3):
+    // Replay scroll management:
     //
-    // Problem A — drawing tools scroll the chart:
-    //   setData() triggers auto-scroll to fit content. When a drawing click fires a
-    //   CANDLE event → updateReplayData → setData(), the chart scrolls mid-click and
-    //   the drawn coordinate lands at the wrong position.
-    //   Fix: save/restore the visible range around every setData in replay mode.
-    //   We do NOT disable shiftVisibleRangeOnNewBar globally because that kills
-    //   the new-candle auto-scroll (issue 3).
-    //
-    // Problem B — user drags should lock the view:
-    //   When the user manually drags the chart we stop auto-scrolling to the latest
-    //   bar. When they scroll back to within 1 bar of the right edge we re-enable it.
-    //
-    // Both are handled here with a userPinnedRef + subscribeVisibleLogicalRangeChange.
-    const replayUserPinnedRef = useRef(false);   // true = user dragged away from right edge
-    const replayProgrammaticRef = useRef(false); // true = we are doing a programmatic scroll
+    // replayUserPinnedRef: true when user manually panned away from the right edge.
+    //   Auto-scroll is suppressed while pinned; restored when user scrolls back.
+    // replayProgrammaticRef: true during our own setVisibleLogicalRange calls so the
+    //   range-change listener doesn't mistake them for user drags.
+    // replayEnteredAtRef: timestamp of when replay was entered — the range-change
+    //   listener ignores events for 600ms after entry to avoid the initial setData
+    //   call during enter() immediately pinning the master chart.
+    const replayUserPinnedRef = useRef(false);
+    const replayProgrammaticRef = useRef(false);
+    const replayEnteredAtRef = useRef(0);
 
     useEffect(() => {
-        if (!chartRef.current || !isReplayMode) {
+        if (!isReplayMode) {
             replayUserPinnedRef.current = false;
             return;
         }
+        // Record when replay was entered so the listener can ignore the initial burst
+        replayEnteredAtRef.current = Date.now();
+        replayUserPinnedRef.current = false;
 
+        if (!chartRef.current) return;
         const ts = chartRef.current.timeScale();
 
         const handleRangeChange = () => {
-            if (replayProgrammaticRef.current) return; // ignore our own scrolls
-            // Check if the user has scrolled away from the rightmost bar.
-            // getVisibleLogicalRange().to >= total bars - 1 means right edge is in view.
+            if (replayProgrammaticRef.current) return;
+            // Ignore range changes for the first 600ms after entering replay —
+            // the initial setData/setVisibleLogicalRange during enter() would
+            // otherwise immediately pin the master chart and disable auto-scroll.
+            if (Date.now() - replayEnteredAtRef.current < 600) return;
+
             const logicalRange = ts.getVisibleLogicalRange();
             if (!logicalRange) return;
-            const totalBars = fullDataRef.current?.length ?? 0;
-            const atRightEdge = logicalRange.to >= totalBars - 2;
+            // Consider the user "at the right edge" if the last bar is within
+            // 5 logical positions of the right side of the visible window.
+            const currentIndex = replayIndexRef.current ?? 0;
+            const atRightEdge = logicalRange.to >= currentIndex - 2;
             replayUserPinnedRef.current = !atRightEdge;
         };
 
@@ -1477,25 +1514,35 @@ const ChartComponent = forwardRef(({
 
         replayIndexRef.current = clampedIndex;
 
-        // Restore visible range after setData() to prevent the fit-content scroll.
-        // Then, if the user has NOT manually panned away (replayUserPinnedRef=false),
-        // scroll to keep the latest replay bar near the right edge — this is the
-        // "auto-scroll for new candles" behaviour (issue 3).
+        // Restore visible range after setData() to cancel the fit-content auto-scroll,
+        // then decide whether to shift the view for auto-scroll or lock it.
         setTimeout(() => {
             if (!chartRef.current) return;
             const ts = chartRef.current.timeScale();
             replayProgrammaticRef.current = true;
             try {
-                if (preserveView || replayUserPinnedRef.current) {
-                    // User has panned away or caller wants to preserve view — restore exactly.
+                const isDrawingActive = activeToolRef.current && activeToolRef.current !== 'cursor';
+
+                if (preserveView || replayUserPinnedRef.current || isDrawingActive) {
+                    // Preserve the exact view:
+                    // - caller requested it (preserveView)
+                    // - user manually panned away (replayUserPinnedRef)
+                    // - a drawing tool is active — never scroll mid-draw
                     if (currentVisibleRange) ts.setVisibleLogicalRange(currentVisibleRange);
                 } else {
-                    // Auto-scroll: keep the latest bar visible near the right edge.
-                    // Restore the range width but shift it to show the new bar.
+                    // Auto-scroll: keep the latest replay bar near the right edge.
+                    // Shift the window by exactly 1 bar so movement is smooth.
                     if (currentVisibleRange) {
                         const rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
-                        const newTo = clampedIndex + 10; // small right padding
-                        ts.setVisibleLogicalRange({ from: newTo - rangeWidth, to: newTo });
+                        const currentTo = currentVisibleRange.to;
+                        // Only scroll if the new bar has moved past the right edge
+                        if (clampedIndex >= currentTo - 1) {
+                            const newTo = clampedIndex + 5; // small right padding
+                            ts.setVisibleLogicalRange({ from: newTo - rangeWidth, to: newTo });
+                        } else {
+                            // Bar still in view — restore exactly, no scroll needed
+                            ts.setVisibleLogicalRange(currentVisibleRange);
+                        }
                     }
                 }
             } catch { /* ignore */ }
@@ -1547,11 +1594,18 @@ const ChartComponent = forwardRef(({
                 setIsReplayMode(false);
                 setIsSelectingReplayPoint(false);
                 setExternalSliderX(null);
-                if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                    dataRef.current = fullDataRef.current;
-                    const transformed = transformData(fullDataRef.current, chartTypeRef.current);
+                // Use ChartDataManager.data (live-updated during replay) to close
+                // the gap between entry snapshot and current live data.
+                const mgr = chartDataManagerRef.current;
+                const liveData = (mgr && mgr.data && mgr.data.length > 0)
+                    ? mgr.data
+                    : fullDataRef.current;
+                if (mainSeriesRef.current && liveData.length > 0) {
+                    dataRef.current = liveData;
+                    fullDataRef.current = liveData;
+                    const transformed = transformData(liveData, chartTypeRef.current);
                     mainSeriesRef.current.setData(transformed);
-                    updateIndicatorsRef.current?.(fullDataRef.current, indicators);
+                    updateIndicatorsRef.current?.(liveData, indicators);
                 }
                 if (onReplayModeChange) onReplayModeChange(false);
             }, 0);
@@ -1700,13 +1754,25 @@ const ChartComponent = forwardRef(({
                     updateReplayDataRef.current?.(index, hideFuture, preserveView);
                 },
                 onReset: () => {
-                    // Called by ReplayController.exit() — restore full data display.
+                    // Called by ReplayController.exit() — restore full live data display.
                     replayIndexRef.current = null;
-                    if (mainSeriesRef.current && fullDataRef.current.length > 0) {
-                        dataRef.current = fullDataRef.current;
-                        const transformed = transformData(fullDataRef.current, chartTypeRef.current);
+
+                    // Prefer ChartDataManager._data: it has been live-updated during
+                    // replay (onCandle was returning early, but _handleLiveTick still
+                    // merged ticks into _data). This closes the gap between the last
+                    // candle before replay entry and the current live candle.
+                    // Fall back to fullDataRef only if the manager has no data.
+                    const mgr = chartDataManagerRef.current;
+                    const liveData = (mgr && mgr.data && mgr.data.length > 0)
+                        ? mgr.data
+                        : fullDataRef.current;
+
+                    if (mainSeriesRef.current && liveData.length > 0) {
+                        dataRef.current = liveData;
+                        fullDataRef.current = liveData;
+                        const transformed = transformData(liveData, chartTypeRef.current);
                         mainSeriesRef.current.setData(transformed);
-                        updateIndicators(fullDataRef.current, indicators);
+                        updateIndicators(liveData, indicators);
                     }
                 },
             });

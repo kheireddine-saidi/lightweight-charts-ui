@@ -367,6 +367,56 @@ export const TimerIcon = ({ size = 28, ...props }) => (
 );
 TimerIcon.propTypes = IconPropTypes;
 
+
+export const PitchforkIcon = ({ size = 28, ...props }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+        <line x1="14" y1="4" x2="14" y2="24" />
+        <line x1="14" y1="10" x2="6" y2="24" />
+        <line x1="14" y1="10" x2="22" y2="24" />
+        <circle cx="14" cy="4" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="6" cy="24" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="22" cy="24" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+);
+PitchforkIcon.propTypes = IconPropTypes;
+
+export const ABCDIcon = ({ size = 28, ...props }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+        <circle cx="5" cy="20" r="2" fill="currentColor" stroke="none" />
+        <circle cx="11" cy="8" r="2" fill="currentColor" stroke="none" />
+        <circle cx="17" cy="16" r="2" fill="currentColor" stroke="none" />
+        <circle cx="23" cy="6" r="2" fill="currentColor" stroke="none" />
+        <line x1="5" y1="20" x2="11" y2="8" />
+        <line x1="11" y1="8" x2="17" y2="16" />
+        <line x1="17" y1="16" x2="23" y2="6" />
+        <text x="3" y="27" fontSize="5" fill="currentColor" stroke="none" fontFamily="sans-serif">A</text>
+        <text x="9" y="6" fontSize="5" fill="currentColor" stroke="none" fontFamily="sans-serif">B</text>
+        <text x="15" y="24" fontSize="5" fill="currentColor" stroke="none" fontFamily="sans-serif">C</text>
+        <text x="21" y="4" fontSize="5" fill="currentColor" stroke="none" fontFamily="sans-serif">D</text>
+    </svg>
+);
+ABCDIcon.propTypes = IconPropTypes;
+
+export const XABCDIcon = ({ size = 28, ...props }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+        <circle cx="3" cy="14" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="8" cy="6" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="13" cy="18" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="18" cy="8" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="25" cy="20" r="1.5" fill="currentColor" stroke="none" />
+        <line x1="3" y1="14" x2="8" y2="6" />
+        <line x1="8" y1="6" x2="13" y2="18" />
+        <line x1="13" y1="18" x2="18" y2="8" />
+        <line x1="18" y1="8" x2="25" y2="20" />
+        <text x="1" y="27" fontSize="4" fill="currentColor" stroke="none" fontFamily="sans-serif">X</text>
+        <text x="6" y="5" fontSize="4" fill="currentColor" stroke="none" fontFamily="sans-serif">A</text>
+        <text x="11" y="26" fontSize="4" fill="currentColor" stroke="none" fontFamily="sans-serif">B</text>
+        <text x="16" y="6" fontSize="4" fill="currentColor" stroke="none" fontFamily="sans-serif">C</text>
+        <text x="23" y="26" fontSize="4" fill="currentColor" stroke="none" fontFamily="sans-serif">D</text>
+    </svg>
+);
+XABCDIcon.propTypes = IconPropTypes;
+
 export const TradeSetupIcon = ({ size = 28, ...props }) => (
     <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 28 28" fill="currentColor" {...props}>
         {/* Green TP box (top) */}

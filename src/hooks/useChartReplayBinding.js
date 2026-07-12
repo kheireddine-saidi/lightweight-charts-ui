@@ -69,117 +69,13 @@ export function useChartReplayBinding({
         };
     }, [isReplayMode, symbol]);
 
-    // Click Handler for Replay Mode - handles direct chart clicks to jump to a position
-    // Uses chart.subscribeClick which provides accurate param.time
-    // This is separate from the "Jump to Bar" (scissors) handler
-    useEffect(() => {
-        if (!chartRef.current || !isReplayMode || isSelectingReplayPoint || isPlaying) return;
-        if (!mainSeriesRef.current) return;
-
-        const handleReplayClick = (param) => {
-            if (!param) return;
-            if (!fullDataRef.current || fullDataRef.current.length === 0) return;
-            // Skip if we're in selecting mode (handled by different handler)
-            if (isSelectingReplayPoint) return;
-            // Skip if we're playing (don't interrupt playback with clicks)
-            if (isPlayingRef.current) return;
-
-            try {
-                let clickedTime = null;
-
-                // Use param.time - this is the most accurate way to get time at click position
-                if (param.time) {
-                    clickedTime = param.time;
-                } else if (param.point) {
-                    // Fallback: use coordinate to get time
-                    const timeScale = chartRef.current.timeScale();
-                    clickedTime = timeScale.coordinateToTime(param.point.x);
-                }
-
-                if (!clickedTime) return;
-
-                // DEBUG: Log the clicked time to verify it's correct
-
-
-                // Find the closest candle in FULL data to the clicked time
-                let clickedIndex = -1;
-                let minDiff = Infinity;
-
-                for (let i = 0; i < fullDataRef.current.length; i++) {
-                    const diff = Math.abs(fullDataRef.current[i].time - clickedTime);
-                    if (diff < minDiff) {
-                        minDiff = diff;
-                        clickedIndex = i;
-                    }
-                }
-
-                // Fallback if no match found
-                if (clickedIndex === -1) {
-                    clickedIndex = fullDataRef.current.length - 1;
-                }
-
-                // Clamp to valid range
-                clickedIndex = Math.max(0, Math.min(clickedIndex, fullDataRef.current.length - 1));
-
-                // DEBUG: Log the found candle time
-
-
-                // Store current visible range BEFORE updating data
-                let currentVisibleRange = null;
-                try {
-                    const timeScale = chartRef.current.timeScale();
-                    currentVisibleRange = timeScale.getVisibleRange();
-                } catch {
-                    // Ignore
-                }
-
-                // Update replay to the clicked position — Phase 7: delegate to controller.
-                const ctrl = replayControllerRef.current;
-                if (ctrl) {
-                    ctrl.seek(clickedIndex, true);
-                } else {
-                    replaySeek(clickedIndex);
-                    replayIndexRef.current = clickedIndex;
-                    updateReplayData(clickedIndex, true);
-                }
-
-                // Restore visible range after data update to prevent view jumping
-                if (currentVisibleRange && chartRef.current) {
-                    setTimeout(() => {
-                        try {
-                            const timeScale = chartRef.current.timeScale();
-                            // Adjust the range to end at the clicked candle if needed
-                            const clickedCandleTime = fullDataRef.current[clickedIndex]?.time;
-                            if (clickedCandleTime && currentVisibleRange.to > clickedCandleTime) {
-                                // The current view extends beyond the clicked time, adjust it
-                                const rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
-                                const newTo = clickedCandleTime;
-                                const newFrom = newTo - rangeWidth;
-                                timeScale.setVisibleRange({ from: newFrom, to: newTo });
-                            } else {
-                                // Keep the current view
-                                timeScale.setVisibleRange(currentVisibleRange);
-                            }
-                        } catch {
-                            // Ignore
-                        }
-                    }, 0);
-                }
-            } catch (e) {
-                console.warn('Error handling replay click:', e);
-            }
-        };
-
-        chartRef.current.subscribeClick(handleReplayClick);
-
-        return () => {
-            if (chartRef.current) {
-                chartRef.current.unsubscribeClick(handleReplayClick);
-            }
-        };
-    }, [isReplayMode, isSelectingReplayPoint, isPlaying, updateReplayData]);
-
     // Click Handler for "Jump to Bar" - TradingView style
+    // NOTE: There is intentionally NO general "click to seek" handler here.
+    // The replay position is only changed by:
+    //   1. Initial entry into replay mode (set to the last loaded bar).
+    //   2. The "Jump to" scissors button (isSelectingReplayPoint path below).
+    //   3. The replay slider.
+    // Any other click (drawing tools, etc.) must NOT seek the replay position.
     useEffect(() => {
         if (!chartRef.current || !isSelectingReplayPoint) return;
         if (!mainSeriesRef.current) return;
@@ -241,10 +137,17 @@ export function useChartReplayBinding({
                         rangeWidth = currentVisibleRange.to - currentVisibleRange.from;
                     }
 
-                    // Phase 7: delegate seek to ReplayController (handles engine rewind too).
+                    // Enter or seek the ReplayController at the selected index.
+                    // On initial entry toggleReplay did not start the controller
+                    // (it waited for the user to pick a start time here), so we
+                    // call enter() if the controller hasn't started yet, otherwise seek().
                     const ctrl = replayControllerRef.current;
-                    if (ctrl) {
+                    if (ctrl && ctrl._active) {
+                        // Controller already running (e.g. "Jump to" after playback started)
                         ctrl.seek(selectedIndex, true);
+                    } else if (ctrl) {
+                        // First selection — start the controller at the chosen bar
+                        ctrl.enter(fullDataRef.current, selectedIndex);
                     } else {
                         replaySeek(selectedIndex);
                         replayIndexRef.current = selectedIndex;

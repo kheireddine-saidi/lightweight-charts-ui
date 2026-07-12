@@ -91,6 +91,7 @@ export class DrawingManager {
     this._onToolUsed          = opts.onToolUsed ?? null;
     this._onAlertsSync        = opts.onAlertsSync ?? null;
     this._onAlertTriggered    = opts.onAlertTriggered ?? null;
+    this._onDrawingChanged    = opts.onDrawingChanged ?? null;
 
     /** @type {object | null} LineToolManager instance */
     this._manager = null;
@@ -132,6 +133,103 @@ export class DrawingManager {
       };
     }
 
+    // ── logicalToCoordinate wrapper — the core fix for drawing drift ────────
+    //
+    // The plugin stores all points as { logical: barIndex, price }.
+    // Bar indices shift whenever historical data is prepended (scroll-back loads),
+    // causing every drawing to drift left.
+    //
+    // Strategy: intercept logicalToCoordinate so that when the plugin renders
+    // logicalToCoordinate(point.logical), we:
+    //   1. Look up the timestamp stored on the point (point.time) via a reverse map
+    //      logical → time that we maintain from the drawing tools.
+    //   2. Convert that timestamp to the CURRENT correct logical index via timeToIndex().
+    //   3. Return the coordinate for that current index.
+    //
+    // The plugin never knows — it always gets the right pixel for the right time.
+    //
+    // We also wrap coordinateToLogical to stamp .time on points at click time,
+    // so the reverse map is always populated with original click timestamps.
+
+    const origLogicalToCoordinate = chart.timeScale().logicalToCoordinate.bind(chart.timeScale());
+    const origCoordinateToLogical = chart.timeScale().coordinateToLogical.bind(chart.timeScale());
+    const origCoordinateToTime    = chart.timeScale().coordinateToTime.bind(chart.timeScale());
+    const origTimeToIndex         = chart.timeScale().timeToIndex?.bind(chart.timeScale());
+
+    // Reverse map: stale logical index → Unix timestamp (populated from tool points)
+    // Rebuilt whenever a tool is added, moved, or data changes.
+    const logicalToTimeMap = new Map();
+
+    // Stamp a single point's logical→time into the map using the data array.
+    // Called only when logical and data ARE in sync (click, drag-end, or initial load).
+    // NEVER called after a prepend — doing so would corrupt the map with wrong times.
+    // Keys are always rounded to integer so float logicals (e.g. 199.7) map correctly.
+    const stampPoint = (point, data) => {
+      if (!point || point.logical == null) return;
+      const key = Math.round(point.logical);
+      if (point.time != null) {
+        logicalToTimeMap.set(key, point.time);
+        return;
+      }
+      const t = (key >= 0 && key < data.length) ? data[key]?.time : null;
+      if (t != null) { point.time = t; logicalToTimeMap.set(key, t); }
+    };
+
+    // Register all current tool points into the map.
+    // Safe to call ONLY when data and tool logical indices are in sync.
+    const stampAllTools = () => {
+      const data = this._getFullData() ?? [];
+      const tools = manager._tools ?? [];
+      tools.forEach(tool => {
+        stampPoint(tool._p1, data); stampPoint(tool._p2, data);
+        stampPoint(tool._p3, data); stampPoint(tool._point, data);
+        tool._points?.forEach(p => stampPoint(p, data));
+        if (tool._logical != null && tool._logicalTime == null) {
+          const idx = Math.round(tool._logical);
+          const data2 = this._getFullData() ?? [];
+          const t = (idx >= 0 && idx < data2.length) ? data2[idx]?.time : null;
+          if (t != null) { tool._logicalTime = t; logicalToTimeMap.set(idx, t); }
+        }
+      });
+    };
+    this._stampAllTools = stampAllTools;
+    // No rebuildLogicalToTimeMap exposed — callers must NOT rebuild on prepend.
+
+    // Wrap logicalToCoordinate: remap stale logical → current logical via timestamp
+    chart.timeScale().logicalToCoordinate = (logical) => {
+      if (logical == null) return null;
+      const key = Math.round(logical);
+      const storedTime = logicalToTimeMap.get(key);
+      if (storedTime != null && origTimeToIndex) {
+        try {
+          const currentLogical = origTimeToIndex(storedTime, true);
+          if (currentLogical != null) return origLogicalToCoordinate(currentLogical);
+        } catch { /* fall through */ }
+      }
+      return origLogicalToCoordinate(logical);
+    };
+
+    // Wrap coordinateToLogical: stamp .time on points at the moment of placement
+    chart.timeScale().coordinateToLogical = (x) => {
+      const logical = origCoordinateToLogical(x);
+      if (logical !== null) {
+        const time = origCoordinateToTime(x);
+        if (time != null) logicalToTimeMap.set(Math.round(logical), time);
+      }
+      return logical;
+    };
+
+    // Patch _endDrag to rebuild the map after every drag (logical values change)
+    const origEndDrag = manager._endDrag?.bind(manager);
+    if (origEndDrag) {
+      manager._endDrag = () => {
+        origEndDrag();
+        // Re-stamp after drag — logical values have changed, data is still in sync
+        stampAllTools();
+        this._onDrawingChanged?.();
+      };
+    }
+
     // ── startTool wrapper — fires onToolUsed when tool is cancelled ─────
     const originalStartTool = manager.startTool.bind(manager);
     manager.startTool = (tool) => {
@@ -150,6 +248,17 @@ export class DrawingManager {
 
     series.attachPrimitive(manager);
     this._manager = manager;
+
+    // Wrap _addTool: stamp new tool's points into the map right after creation.
+    const origAddTool = manager._addTool.bind(manager);
+    manager._addTool = (tool, type, skipHistory) => {
+      origAddTool(tool, type, skipHistory);
+      const data = this._getFullData() ?? [];
+      stampPoint(tool._p1, data); stampPoint(tool._p2, data);
+      stampPoint(tool._p3, data); stampPoint(tool._point, data);
+      tool._points?.forEach(p => stampPoint(p, data));
+      this._onDrawingChanged?.();
+    };
 
     // ── Alert bridge ────────────────────────────────────────────────────
     this._bridgeAlerts(manager);
@@ -291,6 +400,174 @@ export class DrawingManager {
     } catch (err) {
       console.warn('[DrawingManager] zoomChart failed:', err);
     }
+  }
+
+  // ─── Cross-timeframe drawing persistence ────────────────────────────────
+
+  /**
+   * Extract the current state of all drawings, converting bar indices (logical)
+   * to Unix timestamps so coordinates survive a timeframe or symbol change.
+   *
+   * @param {Array<{time: number}>} data  the current chart dataset (used for logical→time)
+   * @returns {Array<object>} serialisable drawing state
+   */
+  extractDrawingState(data) {
+    if (!this._manager) return [];
+    const tools = this._manager._tools ?? [];
+    const chart = this._manager.chart;
+
+    // Sync .time on all tools one final time before extracting —
+    // this covers any drag that happened after the last _endDrag sync.
+    this._syncToolTimes(tools, chart);
+
+    // Fallback: if .time is still missing (e.g. chart not ready for logicalToCoordinate),
+    // derive it from the data array.
+    const logicalToTimeFromData = (logical) => {
+      if (logical == null || !data || data.length === 0) return null;
+      const idx = Math.round(logical);
+      if (idx < 0 || idx >= data.length) return null;
+      return data[idx]?.time ?? null;
+    };
+
+    const getTime = (point, prop = 'time') => {
+      return point?.[prop] ?? logicalToTimeFromData(point?.logical) ?? null;
+    };
+
+    return tools.map(tool => {
+      const state = {};
+      if (tool._p1    != null) state._p1    = { time: getTime(tool._p1),    price: tool._p1.price };
+      if (tool._p2    != null) state._p2    = { time: getTime(tool._p2),    price: tool._p2.price };
+      if (tool._p3    != null) state._p3    = { time: getTime(tool._p3),    price: tool._p3.price };
+      if (tool._point != null) state._point = { time: getTime(tool._point), price: tool._point.price };
+      if (tool._points != null) state._points = tool._points.map(p => ({ time: getTime(p), price: p.price }));
+      if (tool._price   !== undefined) state._price = tool._price;
+      if (tool._logical !== undefined) state._logical = { time: tool._logicalTime ?? logicalToTimeFromData(tool._logical) };
+      if (tool._options != null) {
+        try { state._options = JSON.parse(JSON.stringify(tool._options)); } catch { /* ignore */ }
+      }
+      return { state, tool };
+    });
+  }
+
+  /**
+   * Restore drawing coordinates after a timeframe change by patching each tool's
+   * logical index values in-place using the new dataset for time→logical lookup.
+   * The drawings themselves are NOT recreated — only their coordinates are updated.
+   *
+   * @param {Array<object>} savedState  result of extractDrawingState()
+   * @param {Array<{time: number}>} newData  the new dataset after timeframe change
+   */
+  restoreDrawingState(savedState, newData) {
+    if (!savedState || savedState.length === 0 || !newData || newData.length === 0) return;
+
+    // Build a time→index map for fast lookup
+    const timeToLogical = new Map();
+    newData.forEach((bar, i) => {
+      if (bar.time != null) timeToLogical.set(bar.time, i);
+    });
+
+    // Binary search for the nearest bar when exact time not found
+    const findNearest = (time) => {
+      if (time == null) return null;
+      const exact = timeToLogical.get(time);
+      if (exact !== undefined) return exact;
+      // Find nearest bar by time
+      let lo = 0, hi = newData.length - 1, best = 0, bestDiff = Infinity;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        const diff = Math.abs(newData[mid].time - time);
+        if (diff < bestDiff) { bestDiff = diff; best = mid; }
+        if (newData[mid].time < time) lo = mid + 1;
+        else hi = mid - 1;
+      }
+      return best;
+    };
+
+    const toLogical = (saved) => {
+      if (!saved || saved.time == null) return null;
+      return findNearest(saved.time);
+    };
+
+    savedState.forEach(({ state, tool }) => {
+      if (!tool) return;
+      try {
+        let changed = false;
+
+        // Helper: convert a saved {time, price} to {logical, price, time}
+        // .time is preserved on the restored point so the next extract reads it directly.
+        const makePoint = (saved) => {
+          if (!saved) return null;
+          const l = toLogical(saved);
+          if (l === null) return null;
+          return { logical: l, price: saved.price, time: saved.time };
+        };
+
+        if (state._p1 != null)    { const p = makePoint(state._p1);    if (p) { tool._p1    = p; changed = true; } }
+        if (state._p2 != null)    { const p = makePoint(state._p2);    if (p) { tool._p2    = p; changed = true; } }
+        if (state._p3 != null)    { const p = makePoint(state._p3);    if (p) { tool._p3    = p; changed = true; } }
+        if (state._point != null) { const p = makePoint(state._point); if (p) { tool._point = p; changed = true; } }
+
+        if (state._points != null) {
+          const pts = state._points.map(makePoint).filter(Boolean);
+          if (pts.length > 0) { tool._points = pts; changed = true; }
+        }
+        if (state._logical != null) {
+          const l = toLogical(state._logical);
+          if (l !== null) {
+            tool._logical     = l;
+            tool._logicalTime = state._logical.time; // preserve for next extract
+            changed = true;
+          }
+        }
+
+        if (changed && typeof tool.updateAllViews === 'function') {
+          tool.updateAllViews();
+        }
+      } catch (err) {
+        console.warn('[DrawingManager] restoreDrawingState: failed to patch tool:', err);
+      }
+    });
+  }
+
+  /**
+   * Sync .time onto every { logical, price } point of the given tools.
+   * Called after tool creation and after drag operations.
+   * @param {object[]} tools
+   * @param {object} chart
+   */
+  _syncToolTimes(tools, chart) {
+    // Use the timeScale's timeToIndex/indexToTime-equivalent via coordinateToTime,
+    // but also accept a data array for reliable off-screen bar lookup.
+    const ts = chart?.timeScale();
+    const data = this._getFullData?.() ?? null;
+
+    const toTime = (logical) => {
+      if (logical == null) return null;
+      const idx = Math.round(logical);
+      // Primary: look up directly in the data array — works for any bar including
+      // those scrolled off-screen where logicalToCoordinate returns null.
+      if (data && idx >= 0 && idx < data.length && data[idx]?.time != null) {
+        return data[idx].time;
+      }
+      // Fallback: coordinate conversion (only works for visible bars)
+      if (!ts) return null;
+      try {
+        const coord = ts.logicalToCoordinate(idx);
+        if (coord == null) return null;
+        return ts.coordinateToTime(coord);
+      } catch { return null; }
+    };
+
+    tools.forEach(tool => {
+      try {
+        if (tool._p1    != null && tool._p1.logical    != null) tool._p1.time    = toTime(tool._p1.logical);
+        if (tool._p2    != null && tool._p2.logical    != null) tool._p2.time    = toTime(tool._p2.logical);
+        if (tool._p3    != null && tool._p3.logical    != null) tool._p3.time    = toTime(tool._p3.logical);
+        if (tool._point != null && tool._point.logical != null) tool._point.time = toTime(tool._point.logical);
+        if (tool._points != null) tool._points.forEach(p => { if (p.logical != null) p.time = toTime(p.logical); });
+        if (tool._logical != null) tool._logicalTime = toTime(tool._logical);
+      } catch { /* ignore */ }
+    });
   }
 
   /**

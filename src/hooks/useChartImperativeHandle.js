@@ -375,22 +375,21 @@ export function useChartImperativeHandle(ref, {
             // ── Entering replay ─────────────────────────────────────────────
             fullDataRef.current = [...dataRef.current];
             if (setFullDataForSlider) setFullDataForSlider([...fullDataRef.current]);
-            const startIndex = Math.max(0, dataRef.current.length - 1);
-            replayIndexRef.current = startIndex;
-
-            if (!replayFeedRef.current) {
-                replayFeedRef.current = new ReplayFeed(fullDataRef.current, symbol);
-            } else {
-                replayFeedRef.current.setData(fullDataRef.current, symbol);
-                replayFeedRef.current.reset();
+            // Start with full data visible so the user can pick any point in history.
+            // The ReplayController is NOT entered yet — we wait for the user to click
+            // a start time via the isSelectingReplayPoint UI (red vertical line).
+            // The click handler in useChartReplayBinding will call ctrl.seek() then
+            // setIsSelectingReplayPoint(false) to begin playback.
+            setIsSelectingReplayPoint(true);
+            // Pre-create the ReplayController so it's ready when the user clicks.
+            // We don't call enter() yet — that happens in useChartReplayBinding
+            // when the user clicks to select the start time.
+            getOrCreateReplayControllerRef.current?.();
+            // Show all candles so the user can see the full history to select from
+            if (mainSeriesRef.current) {
+                const transformedAll = transformData(fullDataRef.current, chartTypeRef.current);
+                mainSeriesRef.current.setData(transformedAll);
             }
-
-            const ctrl = getOrCreateReplayControllerRef.current?.();
-            ctrl.enter(fullDataRef.current, startIndex);
-
-            setTimeout(() => {
-                updateReplayDataRef.current?.(startIndex, true);
-            }, 0);
         } else {
             // ── Exiting replay ──────────────────────────────────────────────
             const ctrl = replayControllerRef.current;

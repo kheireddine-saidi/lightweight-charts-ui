@@ -23,7 +23,9 @@ const DrawingToolbar = ({ activeTool, onToolChange, isMagnetMode = false, isDraw
                 { id: 'horizontal_ray', icon: Icons.HorizontalRayIcon, label: 'Horizontal Ray' },
                 { id: 'horizontal', icon: Icons.HorizontalLineIcon, label: 'Horizontal Line' },
                 { id: 'vertical', icon: Icons.VerticalLineIcon, label: 'Vertical Line' },
-                { id: 'cross_line', icon: Icons.CrossLineIcon, label: 'Cross Line' }
+                { id: 'cross_line', icon: Icons.CrossLineIcon, label: 'Cross Line' },
+                { id: 'parallel_channel', icon: Icons.ParallelChannelIcon, label: 'Parallel Channel' },
+                { id: 'pitchfork', icon: Icons.PitchforkIcon, label: 'Pitchfork' }
             ]
         },
         {
@@ -57,7 +59,9 @@ const DrawingToolbar = ({ activeTool, onToolChange, isMagnetMode = false, isDraw
             items: [
                 { id: 'elliott_impulse', icon: Icons.ElliottWaveIcon, label: 'Elliott Impulse Wave (12345)' },
                 { id: 'elliott_correction', icon: Icons.ElliottCorrectionIcon, label: 'Elliott Correction Wave (ABC)' },
-                { id: 'head_and_shoulders', icon: Icons.ElliottWaveIcon, label: 'Head & Shoulders' }
+                { id: 'head_and_shoulders', icon: Icons.ElliottWaveIcon, label: 'Head & Shoulders' },
+                { id: 'abcd', icon: Icons.ABCDIcon, label: 'ABCD Pattern' },
+                { id: 'xabcd', icon: Icons.XABCDIcon, label: 'XABCD Pattern' }
             ]
         },
         {
