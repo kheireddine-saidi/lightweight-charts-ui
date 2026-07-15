@@ -22,6 +22,12 @@
 
 import { LineToolManager, PriceScaleTimer } from '../../plugins/line-tools/line-tools.js';
 import { snapToOHLC } from '../../utils/magnetSnap';
+import { EventBus, Events } from '../../core/EventBus';
+import { useChartSettingsStore } from '../../stores/chartSettingsStore';
+import { GlobalDrawingStore } from './GlobalDrawingStore';
+
+// Module-level counter for unique DrawingManager instance IDs
+let _managerIdCounter = 0;
 
 /** Tool name → LineToolManager tool string */
 const TOOL_MAP = {
@@ -92,6 +98,9 @@ export class DrawingManager {
     this._onAlertsSync        = opts.onAlertsSync ?? null;
     this._onAlertTriggered    = opts.onAlertTriggered ?? null;
     this._onDrawingChanged    = opts.onDrawingChanged ?? null;
+    this._managerId           = ++_managerIdCounter;
+    this._symbol              = opts.symbol ?? null;
+    this._unsubDrawingSync    = null;
 
     /** @type {object | null} LineToolManager instance */
     this._manager = null;
@@ -224,8 +233,10 @@ export class DrawingManager {
     if (origEndDrag) {
       manager._endDrag = () => {
         origEndDrag();
-        // Re-stamp after drag — logical values have changed, data is still in sync
         stampAllTools();
+        // Save updated coordinates to GlobalDrawingStore after drag
+        const dragged = manager._dragState?.tool ?? manager._selectedTool;
+        if (dragged) saveTool(dragged);
         this._onDrawingChanged?.();
       };
     }
@@ -249,6 +260,219 @@ export class DrawingManager {
     series.attachPrimitive(manager);
     this._manager = manager;
 
+    // ── Drawing sync via GlobalDrawingStore ─────────────────────────────────
+    //
+    // Architecture: drawings are global objects stored in GlobalDrawingStore keyed
+    // by symbol. Each chart renders its own lightweight clone of every drawing in
+    // the store for its symbol. When a drawing is added/updated/deleted the store
+    // is updated and all subscriber charts re-apply the full store state.
+    //
+    // A "mirror" is a per-chart primitive cloned from the source tool. Mirrors are
+    // lightweight — they share the source prototype for rendering logic but have
+    // their own _chart, _series, and {logical,price} coordinate objects.
+
+    const symbol = this._symbol;
+    const managerId = this._managerId;
+
+    /** Convert { time, price } → { logical, price, time } for THIS chart */
+    const makeLocalPoint = (p) => {
+      if (!p?.time) return null;
+      const ts = chart.timeScale();
+      let logical = null;
+      try { logical = ts.timeToIndex(p.time, true) ?? null; } catch { /**/ }
+      if (logical == null) return null;
+      const pt = { logical, price: p.price, time: p.time };
+      logicalToTimeMap.set(Math.round(logical), p.time);
+      return pt;
+    };
+
+    /** Extract { time, price } points from a live tool */
+    const extractPoints = (tool) => {
+      const pt = (p) => (p?.time != null) ? { time: p.time, price: p.price } : null;
+      const rawPoints = [
+        pt(tool._p1), pt(tool._p2), pt(tool._p3), pt(tool._point),
+        ...(tool._points?.map(pt) ?? []),
+      ].filter(Boolean);
+      // Deduplicate by time (e.g. _p1 and _point are often the same)
+      const seen = new Set();
+      return rawPoints.filter(p => {
+        const k = `${p.time}:${p.price}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+
+    /** Create a mirror primitive for a global drawing def on THIS chart */
+    const createMirror = (def) => {
+      if (!def.toolRef) return null;
+      try {
+        // Create a new object of the same (private) class using prototype inheritance.
+        // This gives us the rendering methods without needing the private constructor.
+        const mirror = Object.create(Object.getPrototypeOf(def.toolRef));
+
+        // Copy only the safe, chart-independent properties from the source.
+        // We deliberately exclude _views, _paneViews, _options (renderer state) and
+        // will set them fresh below.
+        const skip = new Set(['_chart','_series','_isSelected','_isDragging',
+                              '_dragState','_views','_paneViews']);
+        Object.keys(def.toolRef).forEach(k => {
+          if (!skip.has(k)) mirror[k] = def.toolRef[k];
+        });
+
+        // Assign THIS chart's instances
+        mirror._chart  = chart;
+        mirror._series = series;
+        mirror._isSelected = false;
+        mirror._isDragging = false;
+
+        // Recalculate local {logical,price} coordinates from global {time,price}
+        const pts = def.points.map(makeLocalPoint);
+        if (pts.some(p => p == null)) return null; // not all times in this chart's data
+
+        if (mirror._p1 != null)     mirror._p1    = pts[0] ?? mirror._p1;
+        if (mirror._p2 != null)     mirror._p2    = pts[1] ?? mirror._p2;
+        if (mirror._p3 != null)     mirror._p3    = pts[2] ?? mirror._p3;
+        if (mirror._point != null)  mirror._point = pts[0] ?? mirror._point;
+        if (mirror._points != null) mirror._points = pts;
+
+        mirror._syncId  = def.syncId;
+        mirror.toolType = def.toolType;
+
+        // Re-initialise renderer views so they bind to this chart (not the source)
+        if (typeof mirror._initViews === 'function') {
+          try { mirror._initViews(); } catch { /**/ }
+        }
+
+        return mirror;
+      } catch (err) {
+        console.warn('[DrawingManager] createMirror failed:', err);
+        return null;
+      }
+    };
+
+
+    // Number of clicks required to complete each tool type
+    const TOOL_CLICK_COUNT = {
+      TrendLine: 2, Arrow: 2, Ray: 2, ExtendedLine: 2,
+      HorizontalLine: 1, VerticalLine: 1, CrossLine: 1, HorizontalRay: 1,
+      FibRetracement: 2, FibExtension: 3, FibChannel: 3, FibSpeedResistanceFan: 3,
+      FibCircles: 2, FibTimezone: 1, FibWedge: 3,
+      ParallelChannel: 3, Pitchfork: 3,
+      GannBox: 2, GannSquareFixed: 2, GannFan: 2,
+      Rectangle: 2, Triangle: 3, Ellipse: 2, Brush: 2, Highlighter: 2,
+      Path: 2,  // Path ends on double-click; we send 2 identical final points
+      DatePriceRange: 2,
+      XABCD: 5, ABCD: 4,
+      ElliottImpulse: 6, ElliottCorrection: 4,
+      HeadAndShoulders: 7,
+      Measure: 2,
+    };
+
+    /**
+     * Programmatically place a drawing on this chart by simulating the exact
+     * same click events the plugin receives from real user interaction.
+     * This creates properly initialized tool objects with correct renderer views.
+     */
+    const placeDrawingViaClicks = (def) => {
+      const { toolType, points, options, syncId } = def;
+      const ts = chart.timeScale();
+      const clickCount = TOOL_CLICK_COUNT[toolType] ?? 2;
+
+      // We need at least as many points as clicks
+      if (points.length === 0) return false;
+
+      // Save and restore the active tool type so we don't disrupt the UI
+      const prevToolType = manager._activeToolType;
+
+      try {
+        // Start the tool
+        manager.startTool(toolType);
+
+        // Simulate each click
+        for (let i = 0; i < clickCount; i++) {
+          const pt = points[Math.min(i, points.length - 1)];
+          const x = ts.timeToCoordinate(pt.time);
+          const y = series.priceToCoordinate(pt.price);
+          if (x == null || y == null) {
+            manager.startTool('None');
+            return false;
+          }
+          manager._clickHandler({ point: { x, y }, time: pt.time });
+        }
+
+        // Find the newly created tool (it will be the last one without a _syncId)
+        const newTool = (manager._tools ?? []).slice().reverse()
+          .find(t => !t._syncId || t._syncId === syncId);
+        if (newTool) {
+          newTool._syncId = syncId;
+          // Apply options
+          if (options && typeof newTool.applyOptions === 'function') {
+            try { newTool.applyOptions(options); } catch { /**/ }
+          }
+        }
+
+        return true;
+      } catch (err) {
+        console.warn('[DrawingManager] placeDrawingViaClicks failed:', err);
+        try { manager.startTool('None'); } catch { /**/ }
+        return false;
+      } finally {
+        // Restore the previous active tool type
+        if (manager._activeToolType !== 'None' && manager._activeTool === null) {
+          // Tool was completed — restore to None (cursor mode)
+          if (prevToolType === 'None') manager.startTool('None');
+        }
+      }
+    };
+
+    /** Full re-render: sync all global drawings for this symbol onto this chart */
+    const applyGlobalStore = () => {
+      const settings = useChartSettingsStore.getState();
+      if (!settings.syncDrawingsAcrossSymbol) return;
+
+      const globalDefs = GlobalDrawingStore.getAll(symbol);
+      const existingMirrors = (manager._tools ?? []).filter(t => t._syncId);
+      const globalIds = new Set(globalDefs.map(d => d.syncId));
+
+      // Remove mirrors whose global def was deleted
+      existingMirrors.forEach(mirror => {
+        if (!globalIds.has(mirror._syncId)) {
+          try { manager.deleteTool(mirror, true); } catch { /**/ }
+        }
+      });
+
+      // Add / update for each global def not owned by this manager
+      globalDefs.forEach(def => {
+        if (def.sourceManagerId === managerId) return; // own drawing
+
+        const existing = (manager._tools ?? []).find(t => t._syncId === def.syncId);
+        if (existing) {
+          // Update coordinates by moving each point to the new logical position
+          const pts = def.points.map(makeLocalPoint).filter(Boolean);
+          if (pts.length > 0) {
+            const allPoints = [existing._p1, existing._p2, existing._p3].filter(Boolean);
+            pts.forEach((pt, i) => {
+              if (allPoints[i]) Object.assign(allPoints[i], pt);
+            });
+            if (existing._point) Object.assign(existing._point, pts[0]);
+            if (existing._points) existing._points = pts;
+          }
+          if (def.options) try { Object.assign(existing._options ?? {}, def.options); } catch { /**/ }
+          existing.updateAllViews?.();
+        } else {
+          // Place via programmatic clicks — creates a proper tool with correct views
+          placeDrawingViaClicks(def);
+        }
+      });
+
+      manager.requestUpdate?.();
+    };
+
+    // Subscribe to GlobalDrawingStore changes
+    this._unsubDrawingSync?.();
+    this._unsubDrawingSync = GlobalDrawingStore.subscribe(applyGlobalStore);
+
     // Wrap _addTool: stamp new tool's points into the map right after creation.
     const origAddTool = manager._addTool.bind(manager);
     manager._addTool = (tool, type, skipHistory) => {
@@ -259,6 +483,61 @@ export class DrawingManager {
       tool._points?.forEach(p => stampPoint(p, data));
       this._onDrawingChanged?.();
     };
+
+    /** Save a tool to GlobalDrawingStore (called on create and update) */
+    const saveTool = (tool) => {
+      // Don't save tools that were placed by another manager via sync —
+      // they already exist in the store and re-saving would trigger another
+      // apply → place → save loop.
+      if (tool._syncId && !tool._syncId.startsWith(`${managerId}-`)) return;
+
+      if (!tool._syncId) {
+        tool._syncId = `${managerId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      }
+      const data2 = this._getFullData() ?? [];
+      stampPoint(tool._p1, data2); stampPoint(tool._p2, data2);
+      stampPoint(tool._p3, data2); stampPoint(tool._point, data2);
+      tool._points?.forEach(p => stampPoint(p, data2));
+
+      const points = extractPoints(tool);
+      if (points.length === 0) return;
+
+      let options = null;
+      try { options = tool._options ? JSON.parse(JSON.stringify(tool._options)) : null; } catch { /**/ }
+
+      GlobalDrawingStore.set(symbol, {
+        syncId:          tool._syncId,
+        toolType:        tool.toolType,
+        points,
+        options,
+        toolRef:         tool,
+        sourceManagerId: managerId,
+      });
+    };
+
+    // Wrap _selectTool — fires when a drawing is fully completed (all points placed).
+    // This is the correct place to save because _addTool fires on intermediate clicks.
+    const origSelectTool = manager._selectTool?.bind(manager);
+    if (origSelectTool) {
+      manager._selectTool = (tool) => {
+        origSelectTool(tool);
+        // _activeTool === null means the drawing just completed (not mid-placement)
+        if (tool && manager._activeTool === null) {
+          saveTool(tool);
+        }
+      };
+    }
+
+    // Wrap deleteTool to remove from GlobalDrawingStore
+    const origDeleteTool = manager.deleteTool?.bind(manager);
+    if (origDeleteTool) {
+      manager.deleteTool = (tool, skipHistory) => {
+        origDeleteTool(tool, skipHistory);
+        if (tool._syncId) {
+          GlobalDrawingStore.delete(symbol, tool._syncId);
+        }
+      };
+    }
 
     // ── Alert bridge ────────────────────────────────────────────────────
     this._bridgeAlerts(manager);
@@ -305,7 +584,12 @@ export class DrawingManager {
    */
   syncActiveTool(activeTool, onToolUsed) {
     const manager = this._manager;
-    if (!manager || !activeTool) return;
+    if (!manager) return;
+    // When activeTool is null/falsy (deactivated), reset the plugin to 'None'
+    if (!activeTool) {
+      if (typeof manager.startTool === 'function') manager.startTool('None');
+      return;
+    }
 
     // ── Special action tools ─────────────────────────────────────────────
     if (activeTool === 'trade_setup') {
@@ -568,6 +852,14 @@ export class DrawingManager {
         if (tool._logical != null) tool._logicalTime = toTime(tool._logical);
       } catch { /* ignore */ }
     });
+  }
+
+  /**
+   * Clean up subscriptions. Call when the chart unmounts.
+   */
+  destroy() {
+    this._unsubDrawingSync?.();
+    this._unsubDrawingSync = null;
   }
 
   /**

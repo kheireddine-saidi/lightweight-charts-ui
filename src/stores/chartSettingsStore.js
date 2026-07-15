@@ -13,6 +13,7 @@ const DEFAULTS = {
   bullColor: '#089981',
   bearColor: '#f23645',
   magnetThresholdPx: 12,   // pixel distance — beyond this, magnet snapping is ignored
+  syncDrawingsAcrossSymbol: true,  // mirror drawings to all charts showing the same symbol
 };
 
 function load() {

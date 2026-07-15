@@ -111,6 +111,13 @@ export const Events = Object.freeze({
    *   { clear: true, sourceChartId }
    */
   CROSSHAIR_SYNC: 'CROSSHAIR_SYNC',
+
+  /**
+   * Drawing created/moved/deleted — broadcast to other charts with same symbol.
+   * payload: { symbol, action: 'add'|'update'|'delete', syncId, toolType,
+   *            points: [{time,price}], options, sourceManagerId }
+   */
+  DRAWING_SYNC: 'DRAWING_SYNC',
 });
 
 class EventBusClass {
@@ -134,7 +141,7 @@ class EventBusClass {
     // Dev-mode guard: warn when a single event accumulates many listeners —
     // a common symptom of missing useEffect cleanup returning EventBus.off().
     // import.meta.env.DEV is stripped to false by Vite in production builds.
-    if (import.meta.env.DEV && set.size >= 10) {
+    if (import.meta.env.DEV && set.size >= 20) {
       console.warn(
         `[EventBus] "${event}" now has ${set.size + 1} listeners. ` +
         'Possible missing EventBus.off() in a useEffect cleanup.',

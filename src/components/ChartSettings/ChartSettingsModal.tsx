@@ -197,6 +197,21 @@ const ChartSettingsModal: React.FC<ChartSettingsModalProps> = ({ onClose, theme 
           </Section>
 
           <Section>
+            <SectionLabel $t={t}>Drawings</SectionLabel>
+            <Row>
+              <RowLabel $t={t}>Sync drawings across same symbol</RowLabel>
+              <Toggle
+                $on={settings.syncDrawingsAcrossSymbol}
+                $t={t}
+                onClick={() => setSetting('syncDrawingsAcrossSymbol', !settings.syncDrawingsAcrossSymbol)}
+              />
+            </Row>
+            <span style={{ fontSize: 10, color: t.dim }}>
+              When enabled, drawings placed on any chart are mirrored to all other open charts showing the same symbol.
+            </span>
+          </Section>
+
+          <Section>
             <SectionLabel $t={t}>Magnet Mode</SectionLabel>
             <SliderRow>
               <Row>
